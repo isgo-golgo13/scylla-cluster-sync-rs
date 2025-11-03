@@ -5,6 +5,34 @@ Ultra-Fast RPO/RTO Sensitive ScyllaDB (Cassandra DB Adaptive) Cluster to Cluster
 
 ## The Dual-Write Proxy Service using Shadow Write Transition Pattern
 
+The Cargo.toml listing the dependencies for the Dual-Write Proxy service.
+```shell
+[package]
+name = "scylla-migration-proxy"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.35", features = ["full"] }
+axum = "0.7"
+scylla = "0.11"
+cassandra-cpp = "3.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+prometheus = "0.13"
+lazy_static = "1.4"
+anyhow = "1.0"
+async-trait = "0.1"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["trace", "metrics"] }
+futures = "0.3"
+dashmap = "5.5"
+```
+
+The flattened view of the code for the Dual-Write Proxy service (NOT using Envoy Proxy).
+
 ```rust
 use axum::{
     extract::{Path, State},
