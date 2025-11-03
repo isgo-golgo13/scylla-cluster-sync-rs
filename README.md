@@ -12,8 +12,54 @@ WIP
 
 ## Cassandra DB vs ScyllaDB Kubernetes Operator Cost Reduction
 
+The high-cognitive load of configuration and JVM overhead using the Cassandra DB and its deployment using the Cassandra DB Kubernetes Operator.
+
 ```shell
-# Here's what changes with ScyllaDB Operator on EKS:
+# cassandra-dc1.yaml - What you need to manage:
+apiVersion: cassandra.datastax.com/v1beta1
+kind: CassandraDatacenter
+metadata:
+  name: dc1
+spec:
+  clusterName: iconik-cluster
+  serverVersion: "4.0.7"
+  size: 12  # Need more nodes!
+  config:
+    jvm-options:
+      initial_heap_size: "8G"
+      max_heap_size: "8G"
+      # GC Tuning nightmare begins...
+      additional-jvm-opts:
+        - "-XX:+UseG1GC"
+        - "-XX:G1RSetUpdatingPauseTimePercent=5"
+        - "-XX:MaxGCPauseMillis=300"
+        # ... 20 more GC flags
+```
+
+The low-cognitive load of configuration and no-JVM overhead using the Scylla DB (uses 100% C++) and its deployment using the ScyllaDB Kubernetes Operator.
+
+```shell
+# scylla-cluster.yaml - Self-tuning magic:
+apiVersion: scylla.scylladb.com/v1
+kind: ScyllaCluster
+metadata:
+  name: iconik-media
+spec:
+  version: 5.2.0
+  developerMode: false  # Production mode = auto-tuning!
+  cpuset: true  # CPU pinning for zero latency
+  size: 3  # That's it! 3 nodes instead of 12
+  resources:
+    requests:
+      cpu: 7  # Leaves 1 CPU for system
+      memory: 30Gi  # All usable, no heap sizing!
+```
+
+
+
+
+```shell
+# Changes with ScyllaDB Operator on EKS:
 
 Cassandra on EKS:
 - Memory: 32GB (8GB heap + 24GB off-heap)
@@ -33,3 +79,9 @@ ScyllaDB on EKS:
 
 
 
+
+
+## References
+
+- Cassandra DB Kubernetes Operator
+- ScyllaDB Kubernetes Operator
