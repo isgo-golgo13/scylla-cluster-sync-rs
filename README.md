@@ -63,7 +63,7 @@ cluster = Cluster(['cassandra-node1', 'cassandra-node2'])
 session = cluster.connect('iconik')
 ...
 
-# After transition to SycllaDB
+# SycllaDB code (identical)
 cluster = Cluster(['scylla-node1', 'scylla-node2'])
 session = cluster.connect('iconik')
 ```
