@@ -2,7 +2,15 @@
 Ultra-Fast RPO/RTO Sensitive ScyllaDB (Cassandra DB Adaptive) Cluster to Cluster Tenant Data Synching Service in Rust using Shadow Write Transition Pattern.
 
 
-## Cassandra DB vs ScyllaDB Kubernetes Operator
+
+## The Shadow Write Transition Pattern
+
+```rust
+WIP
+```
+
+
+## Cassandra DB vs ScyllaDB Kubernetes Operator Cost Reduction
 
 ```shell
 # Here's what changes with ScyllaDB Operator on EKS:
@@ -20,4 +28,8 @@ ScyllaDB on EKS:
 - Annual EC2 cost: ~$35,000 (i3.2xlarge with NVMe)
 - TCO Savings: ~70% ($70,000/year!)
 ```
+
+
+
+
 
