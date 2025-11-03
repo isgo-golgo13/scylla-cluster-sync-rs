@@ -594,7 +594,7 @@ async fn main() -> anyhow::Result<()> {
 ```
 
 
-## Clients Connection to Dual-Write Proxy Service
+## Client Applications Use of Dual-Write Proxy Service
 
 ```python
 """
