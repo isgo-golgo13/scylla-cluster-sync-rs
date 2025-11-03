@@ -58,11 +58,12 @@ spec:
 The applications using CassandraDB and to the switch to SycllaDB provides 100% transparent functionality with no code changes.
 
 ```pseudo
-# Their existing Cassandra code:
+# Existing Cassandra DB code:
 cluster = Cluster(['cassandra-node1', 'cassandra-node2'])
 session = cluster.connect('iconik')
+...
 
-# After migration - literally just change the connection:
+# After transition to SycllaDB
 cluster = Cluster(['scylla-node1', 'scylla-node2'])
 session = cluster.connect('iconik')
 ```
