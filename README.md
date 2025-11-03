@@ -55,6 +55,17 @@ spec:
       memory: 30Gi  # All usable, no heap sizing!
 ```
 
+The applications using CassandraDB and to the switch to SycllaDB provides 100% transparent functionality with no code changes.
+
+```pseudo
+# Their existing Cassandra code:
+cluster = Cluster(['cassandra-node1', 'cassandra-node2'])
+session = cluster.connect('iconik')
+
+# After migration - literally just change the connection:
+cluster = Cluster(['scylla-node1', 'scylla-node2'])
+session = cluster.connect('iconik')
+```
 
 
 
