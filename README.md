@@ -23,12 +23,12 @@ metadata:
 spec:
   clusterName: iconik-cluster
   serverVersion: "4.0.7"
-  size: 12  # Need more nodes!
+  size: 12  # Requires 4x nodes vs ScyllaDB (3)
   config:
     jvm-options:
       initial_heap_size: "8G"
       max_heap_size: "8G"
-      # GC Tuning nightmare begins...
+      # GC Tuning cognitive-overload
       additional-jvm-opts:
         - "-XX:+UseG1GC"
         - "-XX:G1RSetUpdatingPauseTimePercent=5"
@@ -48,11 +48,11 @@ spec:
   version: 5.2.0
   developerMode: false  # Production mode = auto-tuning!
   cpuset: true  # CPU pinning for zero latency
-  size: 3  # That's it! 3 nodes instead of 12
+  size: 3  # 3 nodes instead of 12
   resources:
     requests:
       cpu: 7  # Leaves 1 CPU for system
-      memory: 30Gi  # All usable, no heap sizing!
+      memory: 30Gi  # No heap sizing
 ```
 
 The applications using CassandraDB and to the switch to SycllaDB provides 100% transparent functionality with no code changes.
