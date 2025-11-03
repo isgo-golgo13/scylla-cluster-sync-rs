@@ -3,10 +3,591 @@ Ultra-Fast RPO/RTO Sensitive ScyllaDB (Cassandra DB Adaptive) Cluster to Cluster
 
 
 
-## The Shadow Write Transition Pattern
+## The Dual-Write Proxy Service using Shadow Write Transition Pattern
 
 ```rust
-WIP
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::Json,
+    routing::{get, post},
+    Router,
+};
+use cassandra_cpp::{Cluster as CassandraCluster, Session as CassandraSession};
+use futures::future::join_all;
+use lazy_static::lazy_static;
+use prometheus::{
+    register_histogram_vec, register_int_counter_vec, HistogramVec, IntCounterVec,
+};
+use scylla::{Session as ScyllaSession, SessionBuilder};
+use serde::{Deserialize, Serialize};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use tokio::sync::RwLock;
+use tower_http::trace::TraceLayer;
+use tracing::{error, info, warn};
+
+// Metrics for observability
+lazy_static! {
+    static ref WRITE_LATENCY: HistogramVec = register_histogram_vec!(
+        "proxy_write_latency_seconds",
+        "Write latency in seconds",
+        &["database", "status"]
+    )
+    .unwrap();
+    
+    static ref WRITE_COUNTER: IntCounterVec = register_int_counter_vec!(
+        "proxy_writes_total",
+        "Total number of writes",
+        &["database", "status"]
+    )
+    .unwrap();
+    
+    static ref CONSISTENCY_MISMATCHES: IntCounterVec = register_int_counter_vec!(
+        "proxy_consistency_mismatches",
+        "Number of consistency check failures",
+        &["operation"]
+    )
+    .unwrap();
+}
+
+// Configuration for the proxy
+#[derive(Clone, Debug, Deserialize)]
+pub struct ProxyConfig {
+    pub cassandra_hosts: Vec<String>,
+    pub scylla_hosts: Vec<String>,
+    pub write_mode: WriteMode,
+    pub validation_percentage: f32, // 0.01 = 1% validation
+    pub shadow_write_timeout_ms: u64,
+    pub primary_write_timeout_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub enum WriteMode {
+    PrimaryOnly,      // Phase 0: Only write to Cassandra
+    DualWriteAsync,   // Phase 1: Write to both, don't wait for ScyllaDB
+    DualWriteSync,    // Phase 2: Write to both, wait for both
+    ShadowPrimary,    // Phase 3: ScyllaDB primary, Cassandra shadow
+    TargetOnly,       // Phase 4: Only write to ScyllaDB (migration complete)
+}
+
+// Main proxy state
+#[derive(Clone)]
+pub struct MigrationProxy {
+    cassandra: Arc<CassandraSession>,
+    scylla: Arc<ScyllaSession>,
+    config: Arc<RwLock<ProxyConfig>>,
+    validator: Arc<ConsistencyValidator>,
+}
+
+impl MigrationProxy {
+    pub async fn new(config: ProxyConfig) -> anyhow::Result<Self> {
+        info!("Initializing Migration Proxy with config: {:?}", config);
+        
+        // Initialize Cassandra connection
+        let mut cassandra_cluster = CassandraCluster::default();
+        for host in &config.cassandra_hosts {
+            cassandra_cluster.set_contact_points(host).unwrap();
+        }
+        cassandra_cluster.set_protocol_version(4).unwrap();
+        let cassandra_session = cassandra_cluster.connect().unwrap();
+        
+        // Initialize ScyllaDB connection with native Rust driver
+        let scylla_session = SessionBuilder::new()
+            .known_nodes(&config.scylla_hosts)
+            .connection_timeout(Duration::from_secs(10))
+            .build()
+            .await?;
+        
+        let validator = Arc::new(ConsistencyValidator::new());
+        
+        Ok(Self {
+            cassandra: Arc::new(cassandra_session),
+            scylla: Arc::new(scylla_session),
+            config: Arc::new(RwLock::new(config)),
+            validator,
+        })
+    }
+    
+    // Main write operation with dual-write logic
+    pub async fn write(&self, request: WriteRequest) -> Result<WriteResponse, ProxyError> {
+        let start = Instant::now();
+        let config = self.config.read().await;
+        
+        match config.write_mode {
+            WriteMode::PrimaryOnly => {
+                self.write_cassandra_only(request).await
+            }
+            WriteMode::DualWriteAsync => {
+                self.write_dual_async(request, &config).await
+            }
+            WriteMode::DualWriteSync => {
+                self.write_dual_sync(request, &config).await
+            }
+            WriteMode::ShadowPrimary => {
+                self.write_scylla_primary(request, &config).await
+            }
+            WriteMode::TargetOnly => {
+                self.write_scylla_only(request).await
+            }
+        }
+    }
+    
+    // Write only to Cassandra (Phase 0)
+    async fn write_cassandra_only(&self, request: WriteRequest) -> Result<WriteResponse, ProxyError> {
+        let timer = WRITE_LATENCY.with_label_values(&["cassandra", "success"]).start_timer();
+        
+        let query = self.build_cql_query(&request);
+        // Execute on Cassandra
+        match self.execute_cassandra_query(&query).await {
+            Ok(_) => {
+                timer.observe_duration();
+                WRITE_COUNTER.with_label_values(&["cassandra", "success"]).inc();
+                Ok(WriteResponse {
+                    success: true,
+                    latency_ms: timer.stop_and_record() * 1000.0,
+                    database: "cassandra".to_string(),
+                })
+            }
+            Err(e) => {
+                WRITE_COUNTER.with_label_values(&["cassandra", "error"]).inc();
+                Err(ProxyError::DatabaseError(e.to_string()))
+            }
+        }
+    }
+    
+    // Dual write with async shadow write to ScyllaDB (Phase 1)
+    async fn write_dual_async(
+        &self,
+        request: WriteRequest,
+        config: &ProxyConfig,
+    ) -> Result<WriteResponse, ProxyError> {
+        let query = self.build_cql_query(&request);
+        let timer = WRITE_LATENCY.with_label_values(&["cassandra", "primary"]).start_timer();
+        
+        // Write to primary (Cassandra) - this blocks
+        let cassandra_result = self.execute_cassandra_query(&query).await;
+        let primary_latency = timer.stop_and_record();
+        
+        // Clone for async ScyllaDB write
+        let scylla = self.scylla.clone();
+        let query_clone = query.clone();
+        let timeout = config.shadow_write_timeout_ms;
+        
+        // Fire-and-forget write to ScyllaDB
+        tokio::spawn(async move {
+            let timer = WRITE_LATENCY.with_label_values(&["scylla", "shadow"]).start_timer();
+            
+            match tokio::time::timeout(
+                Duration::from_millis(timeout),
+                Self::execute_scylla_query(&scylla, &query_clone),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {
+                    timer.observe_duration();
+                    WRITE_COUNTER.with_label_values(&["scylla", "shadow_success"]).inc();
+                }
+                Ok(Err(e)) => {
+                    warn!("Shadow write to ScyllaDB failed: {}", e);
+                    WRITE_COUNTER.with_label_values(&["scylla", "shadow_error"]).inc();
+                }
+                Err(_) => {
+                    warn!("Shadow write to ScyllaDB timed out");
+                    WRITE_COUNTER.with_label_values(&["scylla", "shadow_timeout"]).inc();
+                }
+            }
+        });
+        
+        // Return based on primary result only
+        match cassandra_result {
+            Ok(_) => {
+                WRITE_COUNTER.with_label_values(&["cassandra", "success"]).inc();
+                
+                // Randomly validate consistency
+                if rand::random::<f32>() < config.validation_percentage {
+                    self.validator.schedule_validation(request.clone()).await;
+                }
+                
+                Ok(WriteResponse {
+                    success: true,
+                    latency_ms: primary_latency * 1000.0,
+                    database: "cassandra_primary".to_string(),
+                })
+            }
+            Err(e) => {
+                WRITE_COUNTER.with_label_values(&["cassandra", "error"]).inc();
+                Err(ProxyError::DatabaseError(e.to_string()))
+            }
+        }
+    }
+    
+    // Dual write with synchronous writes to both (Phase 2)
+    async fn write_dual_sync(
+        &self,
+        request: WriteRequest,
+        config: &ProxyConfig,
+    ) -> Result<WriteResponse, ProxyError> {
+        let query = self.build_cql_query(&request);
+        
+        // Execute both writes in parallel
+        let cassandra_future = self.execute_cassandra_query(&query);
+        let scylla_future = Self::execute_scylla_query(&self.scylla, &query);
+        
+        let (cassandra_result, scylla_result) = tokio::join!(cassandra_future, scylla_future);
+        
+        // Both must succeed for the write to be considered successful
+        match (cassandra_result, scylla_result) {
+            (Ok(_), Ok(_)) => {
+                WRITE_COUNTER.with_label_values(&["both", "success"]).inc();
+                Ok(WriteResponse {
+                    success: true,
+                    latency_ms: 0.0, // Would track both latencies in production
+                    database: "both".to_string(),
+                })
+            }
+            (Err(e), _) | (_, Err(e)) => {
+                WRITE_COUNTER.with_label_values(&["both", "error"]).inc();
+                Err(ProxyError::DatabaseError(format!("Dual write failed: {}", e)))
+            }
+        }
+    }
+    
+    // Write to ScyllaDB as primary (Phase 3)
+    async fn write_scylla_primary(
+        &self,
+        request: WriteRequest,
+        config: &ProxyConfig,
+    ) -> Result<WriteResponse, ProxyError> {
+        let query = self.build_cql_query(&request);
+        let timer = WRITE_LATENCY.with_label_values(&["scylla", "primary"]).start_timer();
+        
+        // Write to primary (ScyllaDB) - this blocks
+        let scylla_result = Self::execute_scylla_query(&self.scylla, &query).await;
+        let primary_latency = timer.stop_and_record();
+        
+        // Shadow write to Cassandra (async, best-effort)
+        let cassandra = self.cassandra.clone();
+        let query_clone = query.clone();
+        
+        tokio::spawn(async move {
+            let _ = Self::execute_cassandra_shadow(&cassandra, &query_clone).await;
+        });
+        
+        match scylla_result {
+            Ok(_) => {
+                WRITE_COUNTER.with_label_values(&["scylla", "success"]).inc();
+                Ok(WriteResponse {
+                    success: true,
+                    latency_ms: primary_latency * 1000.0,
+                    database: "scylla_primary".to_string(),
+                })
+            }
+            Err(e) => {
+                WRITE_COUNTER.with_label_values(&["scylla", "error"]).inc();
+                Err(ProxyError::DatabaseError(e.to_string()))
+            }
+        }
+    }
+    
+    // Write only to ScyllaDB (Phase 4 - Migration Complete)
+    async fn write_scylla_only(&self, request: WriteRequest) -> Result<WriteResponse, ProxyError> {
+        let timer = WRITE_LATENCY.with_label_values(&["scylla", "success"]).start_timer();
+        
+        let query = self.build_cql_query(&request);
+        match Self::execute_scylla_query(&self.scylla, &query).await {
+            Ok(_) => {
+                timer.observe_duration();
+                WRITE_COUNTER.with_label_values(&["scylla", "success"]).inc();
+                Ok(WriteResponse {
+                    success: true,
+                    latency_ms: timer.stop_and_record() * 1000.0,
+                    database: "scylla".to_string(),
+                })
+            }
+            Err(e) => {
+                WRITE_COUNTER.with_label_values(&["scylla", "error"]).inc();
+                Err(ProxyError::DatabaseError(e.to_string()))
+            }
+        }
+    }
+    
+    // Build CQL query from request
+    fn build_cql_query(&self, request: &WriteRequest) -> String {
+        match &request.operation {
+            Operation::Insert { table, data } => {
+                format!(
+                    "INSERT INTO {} ({}) VALUES ({}) IF NOT EXISTS",
+                    table,
+                    data.keys().cloned().collect::<Vec<_>>().join(", "),
+                    data.values()
+                        .map(|v| format!("'{}'", v))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+            Operation::Update { table, data, key } => {
+                let set_clause = data
+                    .iter()
+                    .map(|(k, v)| format!("{} = '{}'", k, v))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("UPDATE {} SET {} WHERE {}", table, set_clause, key)
+            }
+            Operation::Delete { table, key } => {
+                format!("DELETE FROM {} WHERE {}", table, key)
+            }
+        }
+    }
+    
+    // Execute query on Cassandra
+    async fn execute_cassandra_query(&self, query: &str) -> anyhow::Result<()> {
+        // Cassandra execution logic
+        // In production, this would use the cassandra-cpp async API
+        Ok(())
+    }
+    
+    async fn execute_cassandra_shadow(session: &CassandraSession, query: &str) -> anyhow::Result<()> {
+        // Shadow write to Cassandra - best effort, no error propagation
+        Ok(())
+    }
+    
+    // Execute query on ScyllaDB
+    async fn execute_scylla_query(session: &ScyllaSession, query: &str) -> anyhow::Result<()> {
+        session.query(query, &[]).await?;
+        Ok(())
+    }
+    
+    // Update configuration on the fly (no restart needed!)
+    pub async fn update_config(&self, new_config: ProxyConfig) {
+        info!("Updating proxy configuration to: {:?}", new_config);
+        let mut config = self.config.write().await;
+        *config = new_config;
+    }
+    
+    // Health check endpoint
+    pub async fn health_check(&self) -> HealthStatus {
+        let config = self.config.read().await;
+        HealthStatus {
+            cassandra_connected: self.check_cassandra_health().await,
+            scylla_connected: self.check_scylla_health().await,
+            current_mode: format!("{:?}", config.write_mode),
+            validation_rate: config.validation_percentage,
+        }
+    }
+    
+    async fn check_cassandra_health(&self) -> bool {
+        // Check Cassandra connection health
+        true // Simplified for demo
+    }
+    
+    async fn check_scylla_health(&self) -> bool {
+        // Check ScyllaDB connection health  
+        match self.scylla.query("SELECT now() FROM system.local", &[]).await {
+            Ok(_) => true,
+            Err(_) => false,
+        }
+    }
+}
+
+// Consistency Validator runs in background
+pub struct ConsistencyValidator {
+    pending_validations: Arc<RwLock<Vec<WriteRequest>>>,
+}
+
+impl ConsistencyValidator {
+    pub fn new() -> Self {
+        Self {
+            pending_validations: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+    
+    pub async fn schedule_validation(&self, request: WriteRequest) {
+        let mut pending = self.pending_validations.write().await;
+        pending.push(request);
+    }
+    
+    pub async fn run_validation_loop(
+        &self,
+        cassandra: Arc<CassandraSession>,
+        scylla: Arc<ScyllaSession>,
+    ) {
+        loop {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            
+            let mut pending = self.pending_validations.write().await;
+            if pending.is_empty() {
+                continue;
+            }
+            
+            let to_validate = pending.drain(..).collect::<Vec<_>>();
+            drop(pending); // Release lock
+            
+            for request in to_validate {
+                // Compare data between Cassandra and ScyllaDB
+                match self.validate_consistency(&request, &cassandra, &scylla).await {
+                    Ok(true) => {
+                        info!("Consistency check passed for {:?}", request);
+                    }
+                    Ok(false) => {
+                        warn!("Consistency mismatch detected for {:?}", request);
+                        CONSISTENCY_MISMATCHES.with_label_values(&["data_mismatch"]).inc();
+                    }
+                    Err(e) => {
+                        error!("Consistency check failed: {}", e);
+                        CONSISTENCY_MISMATCHES.with_label_values(&["check_error"]).inc();
+                    }
+                }
+            }
+        }
+    }
+    
+    async fn validate_consistency(
+        &self,
+        request: &WriteRequest,
+        cassandra: &CassandraSession,
+        scylla: &ScyllaSession,
+    ) -> anyhow::Result<bool> {
+        // Read from both databases and compare
+        // This is simplified - real implementation would handle all data types
+        Ok(true)
+    }
+}
+
+// Request/Response types
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WriteRequest {
+    pub operation: Operation,
+    pub consistency: Option<String>,
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Operation {
+    Insert {
+        table: String,
+        data: std::collections::HashMap<String, String>,
+    },
+    Update {
+        table: String,
+        data: std::collections::HashMap<String, String>,
+        key: String,
+    },
+    Delete {
+        table: String,
+        key: String,
+    },
+}
+
+#[derive(Debug, Serialize)]
+pub struct WriteResponse {
+    pub success: bool,
+    pub latency_ms: f64,
+    pub database: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HealthStatus {
+    pub cassandra_connected: bool,
+    pub scylla_connected: bool,
+    pub current_mode: String,
+    pub validation_rate: f32,
+}
+
+#[derive(Debug)]
+pub enum ProxyError {
+    DatabaseError(String),
+    ValidationError(String),
+    ConfigError(String),
+}
+
+impl From<ProxyError> for StatusCode {
+    fn from(err: ProxyError) -> Self {
+        match err {
+            ProxyError::DatabaseError(_) => StatusCode::SERVICE_UNAVAILABLE,
+            ProxyError::ValidationError(_) => StatusCode::CONFLICT,
+            ProxyError::ConfigError(_) => StatusCode::BAD_REQUEST,
+        }
+    }
+}
+
+// HTTP Server setup
+pub async fn create_app(proxy: MigrationProxy) -> Router {
+    Router::new()
+        .route("/write", post(handle_write))
+        .route("/health", get(handle_health))
+        .route("/config", post(handle_config_update))
+        .route("/metrics", get(handle_metrics))
+        .layer(TraceLayer::new_for_http())
+        .with_state(proxy)
+}
+
+async fn handle_write(
+    State(proxy): State<MigrationProxy>,
+    Json(request): Json<WriteRequest>,
+) -> Result<Json<WriteResponse>, StatusCode> {
+    match proxy.write(request).await {
+        Ok(response) => Ok(Json(response)),
+        Err(e) => Err(e.into()),
+    }
+}
+
+async fn handle_health(State(proxy): State<MigrationProxy>) -> Json<HealthStatus> {
+    Json(proxy.health_check().await)
+}
+
+async fn handle_config_update(
+    State(proxy): State<MigrationProxy>,
+    Json(config): Json<ProxyConfig>,
+) -> StatusCode {
+    proxy.update_config(config).await;
+    StatusCode::OK
+}
+
+async fn handle_metrics() -> String {
+    // Return Prometheus metrics
+    prometheus::TextEncoder::new()
+        .encode_to_string(&prometheus::gather())
+        .unwrap()
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Initialize tracing
+    tracing_subscriber::fmt::init();
+    
+    // Load configuration
+    let config = ProxyConfig {
+        cassandra_hosts: vec!["cassandra-1.gcp.example.com".to_string()],
+        scylla_hosts: vec!["scylla-1.aws.example.com".to_string()],
+        write_mode: WriteMode::DualWriteAsync,
+        validation_percentage: 0.01, // 1% validation
+        shadow_write_timeout_ms: 100,
+        primary_write_timeout_ms: 1000,
+    };
+    
+    // Create proxy
+    let proxy = MigrationProxy::new(config).await?;
+    
+    // Start validation loop in background
+    let validator = proxy.validator.clone();
+    let cassandra = proxy.cassandra.clone();
+    let scylla = proxy.scylla.clone();
+    tokio::spawn(async move {
+        validator.run_validation_loop(cassandra, scylla).await;
+    });
+    
+    // Create and run HTTP server
+    let app = create_app(proxy).await;
+    
+    info!("Starting Migration Proxy on port 8080");
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
+    axum::serve(listener, app).await?;
+    
+    Ok(())
+}
 ```
 
 
