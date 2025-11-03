@@ -666,15 +666,14 @@ spec:
 
 The applications using CassandraDB and to the switch to SycllaDB provides 100% transparent functionality with no code changes.
 
-```pseudo
-# Existing Cassandra DB code:
-cluster = Cluster(['cassandra-node1', 'cassandra-node2'])
-session = cluster.connect('iconik')
-...
+```rust
+//Existing Cassandra DB code:
+let cluster = Cluster::new(vec!["cassandra-node1", "cassandra-node2"]);
+let session = cluster.connect("iconik");
 
-# SycllaDB code (identical)
-cluster = Cluster(['scylla-node1', 'scylla-node2'])
-session = cluster.connect('iconik')
+// ScyllaDB (identical)
+let cluster = Cluster::new(vec!["scylla-node1", "scylla-node2"]);
+let session = cluster.connect("iconik");
 ```
 
 
