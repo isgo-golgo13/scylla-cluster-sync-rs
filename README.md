@@ -5,33 +5,8 @@ Ultra-Fast RPO/RTO Sensitive ScyllaDB (Cassandra DB Adaptive) Cluster to Cluster
 
 ## The Dual-Write Proxy Service using Shadow Write Transition Pattern
 
-The Cargo.toml listing the dependencies for the Dual-Write Proxy service.
-```shell
-[package]
-name = "scylla-migration-proxy"
-version = "1.0.0"
-edition = "2021"
 
-[dependencies]
-tokio = { version = "1.35", features = ["full"] }
-axum = "0.7"
-scylla = "0.11"
-cassandra-cpp = "3.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tracing = "0.1"
-tracing-subscriber = "0.3"
-prometheus = "0.13"
-lazy_static = "1.4"
-anyhow = "1.0"
-async-trait = "0.1"
-tower = "0.4"
-tower-http = { version = "0.5", features = ["trace", "metrics"] }
-futures = "0.3"
-dashmap = "5.5"
-```
-
-The flattened view of the code for the Dual-Write Proxy service (NOT using Envoy Proxy).
+The non-multi crate pre-prod view of the code for the Dual-Write Proxy service (NOT using Envoy Proxy).
 
 ```rust
 use axum::{
@@ -588,8 +563,8 @@ async fn main() -> anyhow::Result<()> {
     
     // Load configuration
     let config = ProxyConfig {
-        cassandra_hosts: vec!["cassandra-1.gcp.example.com".to_string()],
-        scylla_hosts: vec!["scylla-1.aws.example.com".to_string()],
+        cassandra_hosts: vec!["cassandra-1.gcp.enginevector.io".to_string()],
+        scylla_hosts: vec!["scylla-1.aws.enginevector.io".to_string()],
         write_mode: WriteMode::DualWriteAsync,
         validation_percentage: 0.01, // 1% validation
         shadow_write_timeout_ms: 100,
@@ -624,7 +599,6 @@ async fn main() -> anyhow::Result<()> {
 ```python
 """
 Python client for the Rust-based Migration Proxy
-Shows how ANY language can integrate with our zero-cost abstraction proxy
 """
 
 import asyncio
