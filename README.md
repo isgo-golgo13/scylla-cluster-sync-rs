@@ -24,7 +24,7 @@ The following graphic shows the architectual workflow of the `Dual-Write Proxy` 
 The `Dual-Writer-Proxy` service deploys as a shotgun Kubernetes Pod co-resident to the GCP applicaition (the streaming applicattion in the graphic) to avoid cross-cloud latency IF the Dual-Writer Proxy resided in the target cloud (AWS). The following Kubernetes `Deployment`resource shows this configuration relative to the streaming application. This shows the use of Cassandra DB as the source DB. This works identically for ScyllaDB.
 
 ```yaml
-# rust-proxy-deployment.yaml - Deploys to GKE, not EKS!
+# rust-proxy-deployment.yaml - Deploys to GKE, NOT EKS 
 apiVersion: apps/v1
 kind: Deployment
 metadata:
