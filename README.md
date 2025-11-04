@@ -1318,6 +1318,93 @@ ScyllaDB on EKS:
 
 
 
+## Project Structure
+
+```shell
+scylla-cluster-sync-rs/
+├── Cargo.toml                    # Workspace root
+├── README.md                     # Complete documentation
+├── Makefile                      # Build automation
+├── docker-compose.yml           # Local dev & prod deployment
+├── .gitignore
+│
+├── svc-kit/                     # Shared library crate (formerly 'shared')
+│   ├── Cargo.toml
+│   └── src/
+│       ├── lib.rs               # Main library with re-exports
+│       ├── error.rs             # Common error types (SyncError, Result)
+│       ├── config.rs            # Shared configuration utilities
+│       ├── metrics.rs           # Common Prometheus metrics setup
+│       ├── health.rs            # Health check traits and utilities
+│       ├── tracing.rs           # Shared tracing/logging setup
+│       ├── cassandra/           # Cassandra-specific shared code
+│       │   ├── mod.rs
+│       │   ├── types.rs         # Common Cassandra types
+│       │   └── utils.rs         # Helper functions
+│       └── scylla/              # ScyllaDB-specific shared code
+│           ├── mod.rs
+│           ├── types.rs         # Common ScyllaDB types
+│           └── utils.rs         # Helper functions
+│
+├── dual-writer/                 # Service 1: Zero-downtime write proxy
+│   ├── Cargo.toml               # Depends on: svc-kit
+│   ├── src/
+│   │   ├── main.rs              # HTTP server & main logic
+│   │   ├── config.rs            # Service-specific configuration
+│   │   ├── writer.rs            # Dual-write strategies
+│   │   ├── cassandra_client.rs  # GCP Cassandra client
+│   │   ├── scylla_client.rs     # AWS ScyllaDB client
+│   │   ├── metrics.rs           # Service-specific Prometheus metrics
+│   │   └── health.rs            # Health checks
+│   ├── config/
+│   │   └── default.yaml         # Default configuration
+│   └── Dockerfile
+│
+├── sstableloader/               # Service 2: Bulk data migration
+│   ├── Cargo.toml               # Depends on: svc-kit
+│   ├── src/
+│   │   ├── main.rs              # CLI & HTTP server
+│   │   ├── config.rs            # Service-specific configuration
+│   │   ├── loader.rs            # Parallel loading engine
+│   │   ├── source.rs            # Source Cassandra reader
+│   │   ├── target.rs            # Target ScyllaDB writer
+│   │   ├── validation.rs        # Data validation
+│   │   ├── metrics.rs           # Progress & metrics
+│   │   └── token_ranges.rs      # Token range splitting
+│   ├── config/
+│   │   └── default.yaml
+│   └── Dockerfile
+│
+├── dual-reader/                 # Service 3: Validation & reconciliation
+│   ├── Cargo.toml               # Depends on: svc-kit
+│   ├── src/
+│   │   ├── main.rs              # HTTP server & orchestrator
+│   │   ├── config.rs            # Service-specific configuration
+│   │   ├── validator.rs         # Validation strategies
+│   │   ├── cassandra_client.rs  # Source reader
+│   │   ├── scylla_client.rs     # Target reader
+│   │   ├── reconciliation.rs    # Auto-fix discrepancies
+│   │   ├── metrics.rs           # Prometheus metrics
+│   │   └── sampler.rs           # Random sampling logic
+│   ├── config/
+│   │   └── default.yaml
+│   └── Dockerfile
+│
+├── config/                      # Shared configs
+│   ├── prometheus.yml
+│   └── grafana/
+│       └── dashboards/
+│           ├── dual-writer.json
+│           ├── sstable-loader.json
+│           └── dual-reader.json
+│
+└── scripts/                     # Helper scripts
+    ├── setup-local.sh
+    ├── deploy-prod.sh
+    └── run-migration.sh
+```
+
+
 
 
 ## References
