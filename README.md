@@ -19,7 +19,7 @@ The following graphic shows the architectual workflow of the `Dual-Write Proxy` 
 ![dual-write-proxy-architecture-gcp-aws](docs/Dual-Writer-Data-Synch-Architecture.png)
 
 
-The `Dual-Write` pattern is developed as follows.
+The `Dual-Write` Pattern is executed as follows (high-level). See the following section `The Dual-Write Proxy Service Pattern (Low-Level)` for in-depth execution of the code.
 
 ```rust
 async fn write_dual_async(
@@ -133,7 +133,7 @@ The following alternative architecture shows the
 
 
 
-## The Dual-Write Proxy Service using Shadow Write Transition Pattern
+## The Dual-Write Proxy Service Pattern (Low-Level)
 
 
 The non-multi crate pre-prod view of the code for the Dual-Write Proxy service (NOT using Envoy Proxy).
