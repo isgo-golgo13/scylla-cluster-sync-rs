@@ -88,7 +88,7 @@ Cassandra  ScyllaDB
 
 
 
-The `Dual-Writer-Proxy` service deploys as a shotgun Kubernetes Pod co-resident to the GCP applicaition (the streaming applicattion in the graphic) to avoid cross-cloud latency IF the Dual-Writer Proxy resided in the target cloud (AWS). The following Kubernetes `Deployment`resource shows this configuration relative to the streaming application. This shows the use of Cassandra DB as the source DB. This works identically for ScyllaDB.
+The `Dual-Writer-Proxy` service deploys as a shotgun Kubernetes Pod co-resident to the GCP application (the streaming applicattion in the graphic) to avoid cross-cloud latency IF the Dual-Writer Proxy resided in the target cloud (AWS). The following Kubernetes `Deployment`resource shows this configuration relative to the streaming application. This shows the use of Cassandra DB as the source DB. This works identically for ScyllaDB.
 
 ```yaml
 # rust-proxy-deployment.yaml - Deploys to GKE, NOT EKS 
@@ -129,7 +129,7 @@ spec:
 
 ## The Dual-Write Proxy Service Architecture (Alternate No-GKE, No-EKS)
 
-The following alternative architecture shows the 
+The following graphic shows the architectual workflow of the `Dual-Write Proxy` service deployed directly to VMs (source VM on GCP and sink/target VM on AWS) without Kubernetes.
 
 
 
@@ -722,6 +722,32 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+## The Four Stages of the Dual-Write Proxy Service (To Full Data Transition End)
+
+```shell
+Phase 1 - DualWriteAsync (Current):
+  Cassandra: SYNCHRONOUS (primary) ✓
+  ScyllaDB:  ASYNCHRONOUS (shadow) 
+  App Impact: NONE (still <1ms latency)
+
+Phase 2 - DualWriteSync (Validation):
+  Cassandra: SYNCHRONOUS (primary) ✓
+  ScyllaDB:  SYNCHRONOUS (also waits) ✓
+  App Impact: Slight increase in latency
+  Purpose: Ensure ScyllaDB can handle load
+
+Phase 3 - ShadowPrimary (Flip):
+  Cassandra: ASYNCHRONOUS (shadow)
+  ScyllaDB:  SYNCHRONOUS (primary) ✓
+  App Impact: Now using ScyllaDB's performance!
+
+Phase 4 - TargetOnly (Complete):
+  Cassandra: NONE (decommissioned)
+  ScyllaDB:  SYNCHRONOUS (only database) ✓
+  App Impact: Full ScyllaDB benefits
+```
+
 
 
 ## Client Applications Use of Dual-Write Proxy Service
