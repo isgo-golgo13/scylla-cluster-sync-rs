@@ -19,6 +19,73 @@ The following graphic shows the architectual workflow of the `Dual-Write Proxy` 
 ![dual-write-proxy-architecture-gcp-aws](docs/Dual-Writer-Data-Synch-Architecture.png)
 
 
+The `Dual-Write` pattern is developed as follows.
+
+```rust
+async fn write_dual_async(
+    &self,
+    request: WriteRequest,
+    config: &ProxyConfig,
+) -> Result<WriteResponse, ProxyError> {
+    let query = self.build_cql_query(&request);
+    
+    // 1. SYNCHRONOUS write to Cassandra (PRIMARY) - This BLOCKS!
+    let cassandra_result = self.execute_cassandra_query(&query).await;
+    let primary_latency = timer.stop_and_record();
+    
+    // 2. ASYNCHRONOUS write to ScyllaDB (SHADOW) - Fire and forget!
+    let scylla = self.scylla.clone();
+    let query_clone = query.clone();
+    
+    tokio::spawn(async move {  // <-- This spawns a separate task!
+        match Self::execute_scylla_query(&scylla, &query_clone).await {
+            Ok(_) => {
+                // Shadow write succeeded
+                WRITE_COUNTER.with_label_values(&["scylla", "shadow_success"]).inc();
+            }
+            Err(e) => {
+                // Shadow write failed - we log but DON'T fail the request
+                warn!("Shadow write to ScyllaDB failed: {}", e);
+            }
+        }
+    });
+    
+    // 3. Return based on PRIMARY (Cassandra) result ONLY
+    match cassandra_result {
+        Ok(_) => {
+            // Success returned immediately after Cassandra write
+            // We don't wait for ScyllaDB!
+            Ok(WriteResponse {
+                success: true,
+                latency_ms: primary_latency * 1000.0,
+                database: "cassandra_primary".to_string(),
+            })
+        }
+        Err(e) => {
+            // Only fail if Cassandra fails
+            Err(ProxyError::DatabaseError(e.to_string()))
+        }
+    }
+}
+```
+
+**The Dual-Write Flow Sequence**
+```
+Application Write Request
+         ↓
+    [Rust Proxy]
+         ↓
+    ┌────┴────┐
+    ↓         ↓
+[SYNC]    [ASYNC - tokio::spawn]
+    ↓         ↓
+Cassandra  ScyllaDB
+    ↓         ↓
+[WAITS]   [NO WAIT]
+    ↓         
+[Returns to App]
+```
+
 
 
 The `Dual-Writer-Proxy` service deploys as a shotgun Kubernetes Pod co-resident to the GCP applicaition (the streaming applicattion in the graphic) to avoid cross-cloud latency IF the Dual-Writer Proxy resided in the target cloud (AWS). The following Kubernetes `Deployment`resource shows this configuration relative to the streaming application. This shows the use of Cassandra DB as the source DB. This works identically for ScyllaDB.
