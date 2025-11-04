@@ -2,16 +2,19 @@
 Ultra-Fast RPO/RTO Sensitive ScyllaDB (Cassandra DB Adaptive) Cluster to Cluster Tenant Data Synching Service in Rust using Shadow Write Transition Pattern.
 
 
-##
-## The Dual-Write Proxy Architecture
+
+
+## The Dual-Write Proxy Service Architecture
 
 The following graphic shows the architectual workflow of the `Dual-Write Proxy` service.
+
+
 
 ![dual-write-proxy-architecture-gcp-aws](docs/Dual-Writer-Data-Synch-Architecture.png)
 
 
 
-##
+
 ## The Dual-Write Proxy Service using Shadow Write Transition Pattern
 
 
