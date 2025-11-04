@@ -1,7 +1,7 @@
 ## Dual-Writer Proxy Service w/ SSTableLoader Processor and Dual-Reader Ack Service
 
 ```rust
-// Complete Rust Migration Suite for Cassandra → ScyllaDB
+// Complete Rust Xfer Suite for Cassandra → ScyllaDB
 
 use tokio::sync::mpsc;
 use async_trait::async_trait;
