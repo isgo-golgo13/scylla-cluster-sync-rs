@@ -20,6 +20,46 @@ The following graphic shows the architectual workflow of the `Dual-Write Proxy` 
 
 
 
+
+The `Dual-Writer-Proxy` service deploys as a shotgun Kubernetes Pod co-resident to the GCP applicaition (the streaming applicattion in the graphic) to avoid cross-cloud latency IF the Dual-Writer Proxy resided in the target cloud (AWS). The following Kubernetes `Deployment`resource shows this configuration relative to the streaming application. This shows the use of Cassandra DB as the source DB. This works identically for ScyllaDB.
+
+```yaml
+# rust-proxy-deployment.yaml - Deploys to GKE, not EKS!
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rust-dual-writer-proxy
+  namespace: iconik  # Same namespace as app in GKE
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: rust-proxy
+  template:
+    metadata:
+      labels:
+        app: rust-proxy
+    spec:
+      affinity:
+        podAntiAffinity:  # Spread across nodes
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - topologyKey: kubernetes.io/hostname
+      containers:
+      - name: proxy
+        image: gcr.io/backlight-gcp/rust-proxy:v1  # GCR, not ECR!
+        ports:
+        - containerPort: 9042  # CQL port
+        - containerPort: 8080  # Admin API
+        env:
+        - name: CASSANDRA_HOSTS
+          value: "cassandra-0.cassandra-svc,cassandra-1.cassandra-svc"  # Local
+        - name: SCYLLA_HOSTS
+          value: "10.100.0.10,10.100.0.11,10.100.0.12"  # AWS IPs via VPN
+        - name: WRITE_MODE
+          value: "DualWriteAsync"
+```
+
+
 ## The Dual-Write Proxy Service Architecture (Alternate No-GKE, No-EKS)
 
 The following alternative architecture shows the 
