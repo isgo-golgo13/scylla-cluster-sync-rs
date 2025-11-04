@@ -1071,7 +1071,7 @@ async def migration_control_plane_svc():
 
 
 if __name__ == "__main__":
-    # Run the examples
+    # Run the services
     asyncio.run(org_media_application_svc())
     
     # Uncomment to run migration orchestration
