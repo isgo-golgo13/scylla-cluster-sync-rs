@@ -1,7 +1,13 @@
 # ScyllaDB Cluster-to-Cluster Sync Service (Rust)
 Ultra-Fast RPO/RTO Sensitive ScyllaDB (Cassandra DB Adaptive) Cluster to Cluster Tenant Data Synching Service in Rust using Shadow Write Transition Pattern.
 
+The architecture of the ScyllaDB (or Cassandra DB source) to ScyllaDB (or Cassandra DB sink/target) involves three services to fulfill the tenant data lift-and-shift transition. These services are.
 
+- Dual-Writer Proxy Service (Rust or C++20/23+) - Rust version used
+- SSTableLoader Processor Service (Rust or C++20/23+) - Rust version used
+- Dual-Reader Data Sync Ack Service (Rust or C++20/23+) - Rust version used
+
+Rust or C++ is required to avoid any GC pauses that would fail 99999 SLA delivery as the data shuttling across the source to the target can NOT withstand latency delays.
 
 
 ## The Dual-Write Proxy Service Architecture
@@ -12,6 +18,11 @@ The following graphic shows the architectual workflow of the `Dual-Write Proxy` 
 
 ![dual-write-proxy-architecture-gcp-aws](docs/Dual-Writer-Data-Synch-Architecture.png)
 
+
+
+## The Dual-Write Proxy Service Architecture (Alternate No-GKE, No-EKS)
+
+The following alternative architecture shows the 
 
 
 
