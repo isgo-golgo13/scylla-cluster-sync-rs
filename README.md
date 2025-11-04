@@ -44,7 +44,7 @@ async fn write_dual_async(
                 WRITE_COUNTER.with_label_values(&["scylla", "shadow_success"]).inc();
             }
             Err(e) => {
-                // Shadow write failed - we log but DON'T fail the request
+                // Shadow write failed, log however DON'T fail the request
                 warn!("Shadow write to ScyllaDB failed: {}", e);
             }
         }
@@ -54,7 +54,7 @@ async fn write_dual_async(
     match cassandra_result {
         Ok(_) => {
             // Success returned immediately after Cassandra write
-            // We don't wait for ScyllaDB!
+            // No wait for ScyllaDB
             Ok(WriteResponse {
                 success: true,
                 latency_ms: primary_latency * 1000.0,
