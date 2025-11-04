@@ -7,7 +7,7 @@ Ultra-Fast RPO/RTO Sensitive ScyllaDB (Cassandra DB Adaptive) Cluster to Cluster
 ## The Dual-Write Proxy Service Architecture
 
 The following graphic shows the architectual workflow of the `Dual-Write Proxy` service.
-
+##
 
 
 ![dual-write-proxy-architecture-gcp-aws](docs/Dual-Writer-Data-Synch-Architecture.png)
@@ -1157,8 +1157,6 @@ ScyllaDB on EKS:
 
 
 
-
-## Test
 
 
 ## References
