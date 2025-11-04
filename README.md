@@ -86,9 +86,26 @@ Cassandra  ScyllaDB
 [Returns to App]
 ```
 
+The critical part of the `Dual-Writer-Proxy` service is to understand the distinction of the `async` wait on the result from a sychrononous write to the source Cassandra (or even source ScyllaDB) and fire-and-forget asynchronous write to the shadow Cassandra DB or ScyllaDB sink/target database. The following codfe logic shows this workflow.
 
 
-The `Dual-Writer-Proxy` service deploys as a shotgun Kubernetes Pod co-resident to the GCP application (the streaming applicattion in the graphic) to avoid cross-cloud latency IF the Dual-Writer Proxy resided in the target cloud (AWS). The following Kubernetes `Deployment`resource shows this configuration relative to the streaming application. This shows the use of Cassandra DB as the source DB. This works identically for ScyllaDB.
+```rust
+// SYNCHRONOUS (waits for result):
+let cassandra_result = self.execute_cassandra_query(&query).await;
+//                                                            ^^^^^ 
+// This 'await': "Wait until Cassandra responds"
+// The function PAUSES here untilthe result is retrieved
+
+// ASYNCHRONOUS (fire-and-forget):
+tokio::spawn(async move {
+    Self::execute_scylla_query(&scylla, &query_clone).await;
+});
+// NO await on the spawn itself
+// The function CONTINUES immediately without waiting
+``` 
+
+
+The `Dual-Writer-Proxy` service deploys a Kubernetes Pod co-resident to the GCP application (the streaming applicattion in the graphic) to avoid cross-cloud latency IF the Dual-Writer Proxy resided in the target cloud (AWS). The following Kubernetes `Deployment`resource shows this configuration relative to the streaming application. This shows the use of Cassandra DB as the source DB. This works identically for ScyllaDB.
 
 ```yaml
 # rust-proxy-deployment.yaml - Deploys to GKE, NOT EKS 
