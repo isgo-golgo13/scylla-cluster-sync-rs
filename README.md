@@ -1378,5 +1378,7 @@ scylla-cluster-sync-rs
 
 ## References
 
-- Cassandra DB Kubernetes Operator
-- ScyllaDB Kubernetes Operator
+Cassandra DB Kubernetes Operator 
+- https://docs.k8ssandra.io/components/cass-operator/
+ScyllaDB Kubernetes Operator 
+- https://www.scylladb.com/product/scylladb-operator-kubernetes/
