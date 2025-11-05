@@ -1328,7 +1328,7 @@ scylla-cluster-sync-rs/
 ├── docker-compose.yml           # Local dev & prod deployment
 ├── .gitignore
 │
-├── svc-kit/                     # Shared library crate (formerly 'shared')
+├── svckit/                     # Shared library crate
 │   ├── Cargo.toml
 │   └── src/
 │       ├── lib.rs               # Main library with re-exports
