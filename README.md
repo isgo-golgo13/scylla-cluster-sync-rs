@@ -1126,10 +1126,10 @@ class MigrationOrchestrator:
             await asyncio.sleep(10)
 
 
-# Use of showing how third-party media application would integrate
-async def enginevector_media_application_svc():
+# Use of showing how third-party stream media application would integrate
+async def enginevector_stream_application_svc():
     """
-    Example of how the third-party media application would use the proxy
+    Showcase of how the third-party media application would use the proxy
     The application code doesn't change - just the connection endpoint
     """
     
@@ -1218,12 +1218,12 @@ async def migration_control_plane_svc():
         # Phase 4: Complete migration
         await orchestrator.complete_migration()
         
-        logger.info("🎉 Migration completed successfully!")
+        logger.info("Migration completed successfully!")
 
 
 if __name__ == "__main__":
     # Run the services
-    asyncio.run(org_media_application_svc())
+    asyncio.run(enginevector_stream_application_svc())
     
     # Uncomment to run migration orchestration
     # asyncio.run(migration_control_plane_svc())
