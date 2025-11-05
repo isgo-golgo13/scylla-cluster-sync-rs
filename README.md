@@ -601,7 +601,7 @@ impl ConsistencyValidator {
         scylla: &ScyllaSession,
     ) -> anyhow::Result<bool> {
         // Read from both databases and compare
-        // This is simplified - real implementation would handle all data types
+        // This is trivialized - actual production code in Git would handle all data types
         Ok(true)
     }
 }
@@ -1027,7 +1027,7 @@ class MigrationOrchestrator:
         
     async def start_shadow_writes(self):
         """Phase 1: Begin shadow writes to ScyllaDB"""
-        logger.info("🚀 Starting Phase 1: Shadow Writes")
+        logger.info("Starting Phase 1: Shadow Writes")
         
         config = ProxyConfig(
             cassandra_hosts=["cassandra.gcp.example.com"],
@@ -1046,7 +1046,7 @@ class MigrationOrchestrator:
     
     async def increase_validation(self, percentage: float):
         """Gradually increase validation percentage"""
-        logger.info(f"📊 Increasing validation to {percentage*100}%")
+        logger.info(f"Increasing validation to {percentage*100}%")
         
         config = ProxyConfig(
             cassandra_hosts=["cassandra.gcp.example.com"],
@@ -1061,7 +1061,7 @@ class MigrationOrchestrator:
     
     async def enable_sync_writes(self):
         """Phase 2: Enable synchronous dual writes"""
-        logger.info("🔄 Starting Phase 2: Synchronous Dual Writes")
+        logger.info("Starting Phase 2: Synchronous Dual Writes")
         
         config = ProxyConfig(
             cassandra_hosts=["cassandra.gcp.example.com"],
@@ -1075,12 +1075,12 @@ class MigrationOrchestrator:
         success = await self.proxy_client.update_proxy_config(config)
         if success:
             self.current_phase = WriteMode.DUAL_WRITE_SYNC
-            logger.info("✅ Synchronous dual writes enabled")
+            logger.info("Synchronous dual writes enabled")
         return success
     
     async def switch_primary_to_scylla(self):
         """Phase 3: Make ScyllaDB the primary"""
-        logger.info("🔀 Starting Phase 3: ScyllaDB as Primary")
+        logger.info("Starting Phase 3: ScyllaDB as Primary")
         
         config = ProxyConfig(
             cassandra_hosts=["cassandra.gcp.example.com"],
@@ -1099,7 +1099,7 @@ class MigrationOrchestrator:
     
     async def complete_migration(self):
         """Phase 4: Complete migration to ScyllaDB only"""
-        logger.info("🎯 Starting Phase 4: ScyllaDB Only")
+        logger.info("Starting Phase 4: ScyllaDB Only")
         
         config = ProxyConfig(
             cassandra_hosts=[],  # No longer needed
@@ -1321,87 +1321,66 @@ ScyllaDB on EKS:
 ## Project Structure
 
 ```shell
-scylla-cluster-sync-rs/
-├── Cargo.toml                    # Workspace root
-├── README.md                     # Complete documentation
-├── Makefile                      # Build automation
-├── docker-compose.yml           # Local dev & prod deployment
-├── .gitignore
-│
-├── svckit/                     # Shared library crate
-│   ├── Cargo.toml
-│   └── src/
-│       ├── lib.rs               # Main library with re-exports
-│       ├── error.rs             # Common error types (SyncError, Result)
-│       ├── config.rs            # Shared configuration utilities
-│       ├── metrics.rs           # Common Prometheus metrics setup
-│       ├── health.rs            # Health check traits and utilities
-│       ├── tracing.rs           # Shared tracing/logging setup
-│       ├── cassandra/           # Cassandra-specific shared code
-│       │   ├── mod.rs
-│       │   ├── types.rs         # Common Cassandra types
-│       │   └── utils.rs         # Helper functions
-│       └── scylla/              # ScyllaDB-specific shared code
-│           ├── mod.rs
-│           ├── types.rs         # Common ScyllaDB types
-│           └── utils.rs         # Helper functions
-│
-├── dual-writer/                 # Service 1: Zero-downtime write proxy
-│   ├── Cargo.toml               # Depends on: svc-kit
-│   ├── src/
-│   │   ├── main.rs              # HTTP server & main logic
-│   │   ├── config.rs            # Service-specific configuration
-│   │   ├── writer.rs            # Dual-write strategies
-│   │   ├── cassandra_client.rs  # GCP Cassandra client
-│   │   ├── scylla_client.rs     # AWS ScyllaDB client
-│   │   ├── metrics.rs           # Service-specific Prometheus metrics
-│   │   └── health.rs            # Health checks
-│   ├── config/
-│   │   └── default.yaml         # Default configuration
-│   └── Dockerfile
-│
-├── sstableloader/               # Service 2: Bulk data migration
-│   ├── Cargo.toml               # Depends on: svc-kit
-│   ├── src/
-│   │   ├── main.rs              # CLI & HTTP server
-│   │   ├── config.rs            # Service-specific configuration
-│   │   ├── loader.rs            # Parallel loading engine
-│   │   ├── source.rs            # Source Cassandra reader
-│   │   ├── target.rs            # Target ScyllaDB writer
-│   │   ├── validation.rs        # Data validation
-│   │   ├── metrics.rs           # Progress & metrics
-│   │   └── token_ranges.rs      # Token range splitting
-│   ├── config/
-│   │   └── default.yaml
-│   └── Dockerfile
-│
-├── dual-reader/                 # Service 3: Validation & reconciliation
-│   ├── Cargo.toml               # Depends on: svc-kit
-│   ├── src/
-│   │   ├── main.rs              # HTTP server & orchestrator
-│   │   ├── config.rs            # Service-specific configuration
-│   │   ├── validator.rs         # Validation strategies
-│   │   ├── cassandra_client.rs  # Source reader
-│   │   ├── scylla_client.rs     # Target reader
-│   │   ├── reconciliation.rs    # Auto-fix discrepancies
-│   │   ├── metrics.rs           # Prometheus metrics
-│   │   └── sampler.rs           # Random sampling logic
-│   ├── config/
-│   │   └── default.yaml
-│   └── Dockerfile
-│
-├── config/                      # Shared configs
-│   ├── prometheus.yml
-│   └── grafana/
-│       └── dashboards/
-│           ├── dual-writer.json
-│           ├── sstable-loader.json
-│           └── dual-reader.json
-│
-└── scripts/                     # Helper scripts
-    ├── setup-local.sh
-    ├── deploy-prod.sh
-    └── run-migration.sh
+scylla-cluster-sync-rs
+├── Cargo.toml
+├── LICENSE
+├── Makefile
+├── README-DW-SSTLoader-Processor-DR.md
+├── README.md
+├── config
+│   ├── dual-reader.yaml
+│   ├── dual-writer.yaml
+│   └── sstable-loader.yaml
+├── docker-compose.yaml
+├── docs
+│   └── Dual-Writer-Data-Synch-Architecture.png
+├── services
+│   ├── dual-reader
+│   │   ├── Cargo.toml
+│   │   ├── Dockerfile.dual-reader
+│   │   ├── Makefile
+│   │   └── src
+│   │       ├── api.rs
+│   │       ├── config.rs
+│   │       ├── main.rs
+│   │       ├── reader.rs
+│   │       ├── reconciliation.rs
+│   │       └── validator.rs
+│   ├── dual-writer
+│   │   ├── Cargo.toml
+│   │   ├── Dockerfile.dual-writer
+│   │   ├── Makefile
+│   │   └── src
+│   │       ├── api.rs
+│   │       ├── config.rs
+│   │       ├── health.rs
+│   │       ├── main.rs
+│   │       └── writer.rs
+│   └── sstable-loader
+│       ├── Cargo.toml
+│       ├── Dockerfile.sstable-loader
+│       ├── Makefile
+│       └── src
+│           ├── api.rs
+│           ├── config.rs
+│           ├── loader.rs
+│           ├── main.rs
+│           └── token_range.rs
+└── svckit
+    ├── Cargo.toml
+    └── src
+        ├── config.rs
+        ├── database
+        │   ├── cassandra.rs
+        │   ├── connection.rs
+        │   ├── mod.rs
+        │   ├── query_builder.rs
+        │   ├── retry.rs
+        │   └── scylla.rs
+        ├── errors.rs
+        ├── lib.rs
+        ├── metrics.rs
+        └── types.rs
 ```
 
 

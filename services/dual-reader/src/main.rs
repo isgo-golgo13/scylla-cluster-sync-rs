@@ -2,6 +2,7 @@ mod reader;
 mod config;
 mod api;
 mod validator;
+mod reconciliation;
 
 use anyhow::Result;
 use clap::Parser;
@@ -22,7 +23,6 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -34,19 +34,15 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     info!("Starting Dual-Reader validation service on port {}", args.port);
     
-    // Load configuration
     let config = config::load_config(&args.config)?;
     
-    // Initialize dual reader
     let reader = Arc::new(reader::DualReader::new(config.clone()).await?);
     
-    // Start background validation tasks
     let reader_clone = reader.clone();
     tokio::spawn(async move {
         reader_clone.continuous_validation_loop().await;
     });
     
-    // Start API server
     api::start_server(reader, args.port).await?;
     
     Ok(())

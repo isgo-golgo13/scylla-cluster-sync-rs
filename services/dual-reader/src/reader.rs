@@ -6,13 +6,17 @@ use tracing::{info, warn, error};
 use uuid::Uuid;
 
 use scylla_sync_shared::{
-    types::{ValidationResult, Discrepancy, DiscrepancyType, RowData},
+    types::{ValidationResult, Discrepancy},
     errors::SyncError,
     database::ScyllaConnection,
     metrics,
 };
-use crate::config::DualReaderConfig;
+use crate::config::{DualReaderConfig, ReconciliationMode};
 use crate::validator::Validator;
+use crate::reconciliation::{
+    Reconciliator, ReconciliationStrategy, 
+    SourceAuthoritativeStrategy, NewestTimestampStrategy, ManualReviewStrategy
+};
 
 pub struct DualReader {
     source_conn: Arc<ScyllaConnection>,
@@ -20,6 +24,7 @@ pub struct DualReader {
     config: Arc<RwLock<DualReaderConfig>>,
     discrepancies: Arc<DashMap<Uuid, Discrepancy>>,
     validator: Arc<Validator>,
+    reconciliator: Arc<RwLock<Reconciliator>>,
 }
 
 impl DualReader {
@@ -34,12 +39,25 @@ impl DualReader {
             target_conn.clone(),
         ));
         
+        let strategy: Box<dyn ReconciliationStrategy> = match config.reader.reconciliation_mode {
+            ReconciliationMode::SourceWins => Box::new(SourceAuthoritativeStrategy),
+            ReconciliationMode::NewestWins => Box::new(NewestTimestampStrategy),
+            ReconciliationMode::Manual => Box::new(ManualReviewStrategy),
+        };
+        
+        let reconciliator = Reconciliator::new(
+            strategy,
+            source_conn.clone(),
+            target_conn.clone(),
+        );
+        
         Ok(Self {
             source_conn,
             target_conn,
             config: Arc::new(RwLock::new(config)),
             discrepancies: Arc::new(DashMap::new()),
             validator,
+            reconciliator: Arc::new(RwLock::new(reconciliator)),
         })
     }
     
@@ -52,14 +70,12 @@ impl DualReader {
         let batch_size = config.reader.batch_size;
         drop(config);
         
-        // Perform validation
         let result = self.validator.validate_table(
             table,
             sample_rate,
             batch_size,
         ).await?;
         
-        // Store discrepancies
         for discrepancy in &result.discrepancies {
             self.discrepancies.insert(discrepancy.id, discrepancy.clone());
         }
@@ -74,7 +90,6 @@ impl DualReader {
             duration
         );
         
-        // Record metrics
         metrics::record_operation(
             "validation",
             table,
@@ -161,36 +176,26 @@ impl DualReader {
         
         info!("Reconciling discrepancy: {:?}", discrepancy.discrepancy_type);
         
-        match discrepancy.discrepancy_type {
-            DiscrepancyType::MissingInTarget => {
-                // Copy from source to target
-                if let Some(source_data) = &discrepancy.source_value {
-                    self.validator.copy_row_to_target(&discrepancy.table, source_data).await?;
-                }
-            }
-            DiscrepancyType::MissingInSource => {
-                // This shouldn't happen in a migration scenario
-                warn!("Row exists in target but not source - unexpected in migration");
-            }
-            DiscrepancyType::DataMismatch => {
-                // Copy from source to target (source is authoritative)
-                if let Some(source_data) = &discrepancy.source_value {
-                    self.validator.copy_row_to_target(&discrepancy.table, source_data).await?;
-                }
-            }
-            _ => {
-                info!("No reconciliation needed for {:?}", discrepancy.discrepancy_type);
-            }
-        }
+        let reconciliator = self.reconciliator.read().await;
+        let result = reconciliator.reconcile(&discrepancy).await?;
         
-        // Remove from discrepancies list
-        self.discrepancies.remove(&discrepancy_id);
+        if result.success {
+            self.discrepancies.remove(&discrepancy_id);
+            info!("Reconciliation successful: {:?}", result.action);
+        }
         
         Ok(())
     }
     
+    pub async fn set_reconciliation_strategy(
+        &self,
+        strategy: Box<dyn ReconciliationStrategy>
+    ) {
+        let mut reconciliator = self.reconciliator.write().await;
+        reconciliator.set_strategy(strategy);
+    }
+    
     pub async fn health_check(&self) -> Result<(), SyncError> {
-        // Check both connections
         self.source_conn.get_session()
             .query("SELECT now() FROM system.local", &[])
             .await

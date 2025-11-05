@@ -20,6 +20,21 @@ pub struct ReaderConfig {
     pub batch_size: usize,
     pub max_discrepancies_to_report: usize,
     pub auto_reconcile: bool,
+    pub reconciliation_mode: ReconciliationMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconciliationMode {
+    SourceWins,
+    NewestWins,
+    Manual,
+}
+
+impl Default for ReconciliationMode {
+    fn default() -> Self {
+        ReconciliationMode::SourceWins
+    }
 }
 
 pub fn load_config(path: &str) -> Result<DualReaderConfig> {
