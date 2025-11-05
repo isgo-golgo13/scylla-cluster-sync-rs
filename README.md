@@ -70,21 +70,11 @@ async fn write_dual_async(
 ```
 
 **The Dual-Write Flow Sequence**
-```
-Application Write Request
-         ↓
-    [Rust Proxy]
-         ↓
-    ┌────┴────┐
-    ↓         ↓
-[SYNC]    [ASYNC - tokio::spawn]
-    ↓         ↓
-Cassandra  ScyllaDB
-    ↓         ↓
-[WAITS]   [NO WAIT]
-    ↓         
-[Returns to App]
-```
+
+The following graphic shows the `Dual-Writer-Proxy` receving the tenant data write request (to dispatch to the target ScyllaDB/CassandraDB Cluster instance) and how it returns thread control to the application calling on this service.
+
+![dual-write-sync-async-shadow-write-flow](docs/Dual-Writer-Sync-Async-Write-Flow.png)
+
 
 The critical part of the `Dual-Writer-Proxy` service is to understand the distinction of the `async` wait on the result from a sychrononous write to the source Cassandra (or even source ScyllaDB) and fire-and-forget asynchronous write to the shadow Cassandra DB or ScyllaDB sink/target database. The following codfe logic shows this workflow.
 
