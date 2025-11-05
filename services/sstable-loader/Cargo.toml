@@ -1,0 +1,62 @@
+[package]
+name = "sstable-loader"
+version = "0.1.0"
+edition = "2021"
+authors = ["Engine Vector <admin@enginevector.io>"]
+description = "High-performance SSTable bulk loader for ScyllaDB/Cassandra cluster migration"
+
+[dependencies]
+# Workspace dependencies
+svckit = { path = "../../svckit" }
+
+# Async runtime
+tokio = { version = "1.40", features = ["full"] }
+
+# ScyllaDB driver
+scylla = { version = "0.14", features = ["ssl", "cloud"] }
+
+# Cassandra driver (fallback)
+cdrs-tokio = { version = "8.1", features = ["rust-tls"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Configuration
+config = "0.14"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Metrics
+prometheus = "0.13"
+
+# HTTP server
+axum = "0.7"
+tower = "0.5"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Async utilities
+futures = "0.3"
+async-trait = "0.1"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Progress tracking
+indicatif = "0.17"
+
+# Parallelism
+rayon = "1.10"
+
+# Compression (for SSTable handling)
+lz4 = "1.24"
+snap = "1.1"
+
+[[bin]]
+name = "sstable-loader"
+path = "src/main.rs"

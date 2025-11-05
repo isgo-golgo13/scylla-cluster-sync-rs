@@ -1,0 +1,52 @@
+[package]
+name = "dual-reader"
+version = "0.1.0"
+edition = "2021"
+authors = ["Engine Vector <admin@enginevector.io>"]
+description = "Dual-reader validation service for ScyllaDB/Cassandra cluster synchronization"
+
+[dependencies]
+# Workspace dependencies
+svckit = { path = "../../svckit" }
+
+# Async runtime
+tokio = { version = "1.40", features = ["full"] }
+
+# ScyllaDB driver
+scylla = { version = "0.14", features = ["ssl", "cloud"] }
+
+# Cassandra driver (fallback)
+cdrs-tokio = { version = "8.1", features = ["rust-tls"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Configuration
+config = "0.14"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Metrics
+prometheus = "0.13"
+
+# HTTP server
+axum = "0.7"
+tower = "0.5"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Async utilities
+futures = "0.3"
+async-trait = "0.1"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+[[bin]]
+name = "dual-reader"
+path = "src/main.rs"
