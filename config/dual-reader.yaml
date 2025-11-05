@@ -1,0 +1,52 @@
+# Dual-Reader Configuration
+# Data Consistency Validation Service
+
+source:
+  hosts:
+    - "scylla-source-1.gcp.example.com"
+    - "scylla-source-2.gcp.example.com"
+    - "scylla-source-3.gcp.example.com"
+  port: 9042
+  keyspace: "production_keyspace"
+  username: null
+  password: null
+  connection_timeout: 5s
+  request_timeout: 10s
+  pool_size: 4
+
+target:
+  hosts:
+    - "scylla-target-1.aws.example.com"
+    - "scylla-target-2.aws.example.com"
+    - "scylla-target-3.aws.example.com"
+  port: 9042
+  keyspace: "production_keyspace"
+  username: null
+  password: null
+  connection_timeout: 5s
+  request_timeout: 10s
+  pool_size: 4
+
+reader:
+  # Tables to validate
+  tables:
+    - "users"
+    - "orders"
+    - "products"
+  
+  # Validation configuration
+  validation_interval_secs: 300  # Run validation every 5 minutes
+  sample_rate: 0.01  # Validate 1% of data per run
+  
+  # Parallelism
+  max_concurrent_reads: 10
+  batch_size: 1000
+  
+  # Discrepancy handling
+  max_discrepancies_to_report: 100
+  auto_reconcile: false  # If true, automatically fix discrepancies
+
+observability:
+  metrics_port: 9091
+  log_level: "info"
+  jaeger_endpoint: null

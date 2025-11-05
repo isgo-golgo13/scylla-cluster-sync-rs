@@ -1,0 +1,67 @@
+# SSTable-Loader Configuration
+# High-Performance Bulk Data Migration Service
+
+source:
+  hosts:
+    - "scylla-source-1.gcp.example.com"
+    - "scylla-source-2.gcp.example.com"
+    - "scylla-source-3.gcp.example.com"
+  port: 9042
+  keyspace: "production_keyspace"
+  username: null
+  password: null
+  connection_timeout: 5s
+  request_timeout: 30s  # Longer timeout for bulk operations
+  pool_size: 8
+
+target:
+  hosts:
+    - "scylla-target-1.aws.example.com"
+    - "scylla-target-2.aws.example.com"
+    - "scylla-target-3.aws.example.com"
+  port: 9042
+  keyspace: "production_keyspace"
+  username: null
+  password: null
+  connection_timeout: 5s
+  request_timeout: 30s
+  pool_size: 8
+
+loader:
+  # Tables to migrate
+  tables:
+    - name: "users"
+      partition_key: ["user_id"]
+    - name: "orders"
+      partition_key: ["order_id"]
+    - name: "products"
+      partition_key: ["product_id"]
+  
+  # Token range configuration
+  # Number of parallel token ranges = num_ranges_per_node * num_nodes * num_cores_per_node
+  num_ranges_per_core: 4
+  
+  # Parallelism
+  max_concurrent_loaders: 32  # Number of parallel loading tasks
+  batch_size: 5000  # Rows per batch
+  
+  # Progress tracking
+  checkpoint_interval_secs: 60  # Save progress every minute
+  checkpoint_file: "/tmp/sstable-loader-checkpoint.json"
+  
+  # Performance tuning
+  prefetch_rows: 10000
+  compression: true  # Use compression for data transfer
+  
+  # Rate limiting
+  max_throughput_mbps: 1000  # Maximum throughput in MB/s (0 = unlimited)
+  
+  # Error handling
+  max_retries: 3
+  retry_delay_secs: 5
+  skip_on_error: false  # If true, skip rows that fail to migrate
+
+observability:
+  metrics_port: 9092
+  log_level: "info"
+  jaeger_endpoint: null
