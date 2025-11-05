@@ -1235,7 +1235,7 @@ if __name__ == "__main__":
 The high-cognitive load of configuration and JVM overhead using the Cassandra DB and its deployment using the Cassandra DB Kubernetes Operator.
 
 ```shell
-# cassandra-dc1.yaml - What you need to manage:
+# cassandra-dc1.yaml
 apiVersion: cassandra.datastax.com/v1beta1
 kind: CassandraDatacenter
 metadata:
@@ -1259,7 +1259,7 @@ spec:
 The low-cognitive load of configuration and no-JVM overhead using the Scylla DB (uses 100% C++) and its deployment using the ScyllaDB Kubernetes Operator.
 
 ```shell
-# scylla-cluster.yaml - Self-tuning magic:
+# scylla-cluster.yaml - Self-tuning (automatic):
 apiVersion: scylla.scylladb.com/v1
 kind: ScyllaCluster
 metadata:
