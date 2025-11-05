@@ -103,7 +103,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: rust-dual-writer-proxy
-  namespace: iconik  # Same namespace as app in GKE
+  namespace: engine-vector  # Same namespace as app in GKE
 spec:
   replicas: 3
   selector:
@@ -1127,7 +1127,7 @@ class MigrationOrchestrator:
 
 
 # Use of showing how third-party media application would integrate
-async def iconik_media_application_example():
+async def enginevector_media_application_svc():
     """
     Example of how the third-party media application would use the proxy
     The application code doesn't change - just the connection endpoint
@@ -1241,7 +1241,7 @@ kind: CassandraDatacenter
 metadata:
   name: dc1
 spec:
-  clusterName: iconik-cluster
+  clusterName: enginevector-cluster
   serverVersion: "4.0.7"
   size: 12  # Requires 4x nodes vs ScyllaDB (3)
   config:
@@ -1263,7 +1263,7 @@ The low-cognitive load of configuration and no-JVM overhead using the Scylla DB 
 apiVersion: scylla.scylladb.com/v1
 kind: ScyllaCluster
 metadata:
-  name: iconik-media
+  name: enginevector-cluster
 spec:
   version: 5.2.0
   developerMode: false  # Production mode = auto-tuning!
@@ -1280,11 +1280,11 @@ The applications using CassandraDB and to the switch to SycllaDB provides 100% t
 ```rust
 //Existing Cassandra DB code:
 let cluster = Cluster::new(vec!["cassandra-node1", "cassandra-node2"]);
-let session = cluster.connect("iconik");
+let session = cluster.connect("engine-vector");
 
 // ScyllaDB (identical)
 let cluster = Cluster::new(vec!["scylla-node1", "scylla-node2"]);
-let session = cluster.connect("iconik");
+let session = cluster.connect("engine-vector");
 ```
 
 
