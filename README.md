@@ -1374,6 +1374,24 @@ scylla-cluster-sync-rs
 ```
 
 
+## Compiling the Services
+
+```shell
+# From repository root
+cd scylla-cluster-sync-rs
+
+# Check workspace structure
+cargo check --workspace
+
+# Build all services
+cargo build --workspace
+
+# Build individual services
+cargo build --bin dual-writer
+cargo build --bin dual-reader
+cargo build --bin sstable-loader
+```
+
 
 
 ## References

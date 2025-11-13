@@ -1,4 +1,5 @@
 use thiserror::Error;
+use std::time::Duration;
 
 #[derive(Error, Debug)]
 pub enum SyncError {

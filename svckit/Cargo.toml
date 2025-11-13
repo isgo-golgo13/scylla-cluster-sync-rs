@@ -4,15 +4,22 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 
+[lib]
+name = "scylla_sync_shared"
+path = "src/lib.rs"
+
 [dependencies]
+scylla.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-uuid.workspace = true
-chrono.workspace = true
-thiserror.workspace = true
-anyhow.workspace = true
+serde_yaml.workspace = true
 tracing.workspace = true
 prometheus.workspace = true
-bytes.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+config.workspace = true
+lazy_static = "1.5"
