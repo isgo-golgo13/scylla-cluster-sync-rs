@@ -4,7 +4,7 @@ use chrono::Utc;
 use uuid::Uuid;
 use tracing::{info, warn};
 
-use scylla_sync_shared::{
+use svckit::{
     types::{ValidationResult, Discrepancy, DiscrepancyType, RowData, ColumnValue},
     errors::SyncError,
     database::ScyllaConnection,

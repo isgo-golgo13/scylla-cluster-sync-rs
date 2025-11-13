@@ -6,7 +6,7 @@ use tokio::task::JoinSet;
 use tracing::{info, warn, error};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
-use scylla_sync_shared::{
+use svckit::{
     errors::SyncError,
     database::ScyllaConnection,
     metrics,

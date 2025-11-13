@@ -1,7 +1,7 @@
 use anyhow::Result;
 use config::{Config, File};
 use serde::{Deserialize, Serialize};
-use scylla_sync_shared::config::{DatabaseConfig, ObservabilityConfig};
+use svckit::config::{DatabaseConfig, ObservabilityConfig};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SSTableLoaderConfig {

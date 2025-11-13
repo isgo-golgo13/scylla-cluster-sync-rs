@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use tracing::info;
-use scylla_sync_shared::{
+use svckit::{
     errors::SyncError,
     database::ScyllaConnection,
 };

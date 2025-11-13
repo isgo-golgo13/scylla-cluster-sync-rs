@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::{info, warn};
 
-use scylla_sync_shared::{
+use svckit::{
     types::{Discrepancy, DiscrepancyType, RowData},
     errors::SyncError,
     database::ScyllaConnection,

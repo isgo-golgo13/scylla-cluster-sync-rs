@@ -5,7 +5,7 @@ use dashmap::DashMap;
 use tracing::{info, warn, error};
 use uuid::Uuid;
 
-use scylla_sync_shared::{
+use svckit::{
     types::{ValidationResult, Discrepancy},
     errors::SyncError,
     database::ScyllaConnection,

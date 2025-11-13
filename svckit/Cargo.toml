@@ -13,6 +13,9 @@ path = "src/lib.rs"
 # ScyllaDB driver
 scylla = { version = "0.14", features = ["ssl", "cloud"] }
 
+# Cassandra driver (for legacy compatibility)
+cdrs-tokio = { version = "8.1", features = ["rust-tls"] }
+
 # Async runtime
 tokio = { version = "1.40", features = ["full"] }
 async-trait = "0.1"
@@ -41,3 +44,4 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # UUID
 uuid = { version = "1.10", features = ["v4", "serde"] }
+
