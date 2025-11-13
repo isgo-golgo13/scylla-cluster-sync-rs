@@ -1,33 +1,63 @@
 [package]
 name = "dual-writer"
-version.workspace = true
-authors.workspace = true
-edition.workspace = true
+version = "0.1.0"
+edition = "2021"
+authors = ["Engine Vector <admin@enginevector.io>"]
+description = "Dual-writer proxy service for zero-downtime ScyllaDB/Cassandra migration"
+
+[dependencies]
+# Workspace dependency
+svckit = { path = "../../svckit" }
+
+# Async runtime
+tokio = { version = "1.40", features = ["full"] }
+
+# ScyllaDB driver
+scylla = { version = "0.14", features = ["ssl", "cloud"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# Configuration
+config = "0.14"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Metrics
+prometheus = "0.13"
+
+# HTTP server
+axum = "0.7"
+tower = "0.5"
+tower-http = { version = "0.5", features = ["trace", "cors", "compression-full"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Async
+futures = "0.3"
+async-trait = "0.1"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Concurrency
+parking_lot = "0.12"
+dashmap = "6.1"
+
+# UUID
+uuid = { version = "1.10", features = ["v4", "serde"] }
+
+
 
 [[bin]]
 name = "dual-writer"
 path = "src/main.rs"
-
-[dependencies]
-scylla-sync-shared = { path = "../../svckit" }
-tokio.workspace = true
-async-trait.workspace = true
-axum.workspace = true
-tower.workspace = true
-tower-http.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-serde_yaml.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
-prometheus.workspace = true
-anyhow.workspace = true
-thiserror.workspace = true
-clap.workspace = true
-config.workspace = true
-uuid.workspace = true
-chrono.workspace = true
-futures.workspace = true
-parking_lot.workspace = true
-dashmap.workspace = true
-scylla.workspace = true

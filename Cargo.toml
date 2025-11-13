@@ -1,74 +1,13 @@
 [workspace]
 members = [
-    "services/dual-writer",
-    "services/sstable-loader",
-    "services/dual-reader",
     "svckit",
+    "services/dual-writer",
+    "services/dual-reader",
+    "services/sstable-loader",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "1.0.0"
-authors = ["Tomas Wallick <wallick.tom@gmail.com>"]
+version = "0.1.0"
+authors = ["Engine Vector <admin@enginevector.io>"]
 edition = "2021"
-license = "MIT"
-repository = "https://github.com/isgo-golgo13/scylla-cluster-sync-rs"
-
-[workspace.dependencies]
-# Async runtime
-tokio = { version = "1.35", features = ["full"] }
-async-trait = "0.1"
-
-# Web framework
-axum = "0.7"
-tower = "0.4"
-tower-http = { version = "0.5", features = ["trace", "cors", "compression"] }
-hyper = "1.0"
-
-# Database drivers
-scylla = "0.11"
-cdrs-tokio = "7.0"
-
-# Serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-serde_yaml = "0.9"
-
-# CLI and config
-clap = { version = "4.4", features = ["derive", "env"] }
-config = "0.13"
-
-# Logging and metrics
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-prometheus = { version = "0.13", features = ["process"] }
-opentelemetry = "0.21"
-opentelemetry-prometheus = "0.14"
-
-# Error handling
-anyhow = "1.0"
-thiserror = "1.0"
-
-# Utilities
-uuid = { version = "1.6", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
-futures = "0.3"
-bytes = "1.5"
-lazy_static = "1.4"
-dashmap = "5.5"
-parking_lot = "0.12"
-
-# Testing
-mockall = "0.12"
-proptest = "1.4"
-criterion = "0.5"
-
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-panic = "abort"
-strip = true
-
-[profile.bench]
-inherits = "release"

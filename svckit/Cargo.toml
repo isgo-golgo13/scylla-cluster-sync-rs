@@ -1,25 +1,43 @@
 [package]
 name = "svckit"
-version.workspace = true
-authors.workspace = true
-edition.workspace = true
+version = "0.1.0"
+edition = "2021"
+authors = ["Engine Vector <admin@enginevector.io>"]
+description = "Service Kit shared library for ScyllaDB/Cassandra cluster synchronization services"
 
 [lib]
 name = "svckit"
 path = "src/lib.rs"
 
 [dependencies]
-scylla.workspace = true
-tokio.workspace = true
-async-trait.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-serde_yaml.workspace = true
-tracing.workspace = true
-prometheus.workspace = true
-anyhow.workspace = true
-thiserror.workspace = true
-uuid.workspace = true
-chrono.workspace = true
-config.workspace = true
+# ScyllaDB driver
+scylla = { version = "0.14", features = ["ssl", "cloud"] }
+
+# Async runtime
+tokio = { version = "1.40", features = ["full"] }
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# Configuration
+config = "0.14"
+
+# Logging
+tracing = "0.1"
+
+# Metrics
+prometheus = "0.13"
 lazy_static = "1.5"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUID
+uuid = { version = "1.10", features = ["v4", "serde"] }
