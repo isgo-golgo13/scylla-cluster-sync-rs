@@ -1,7 +1,7 @@
 .PHONY: build run test docker-build docker-run clean
 
 SERVICE_NAME := sstable-loader
-DOCKER_IMAGE := ghcr.io/yourusername/$(SERVICE_NAME)
+DOCKER_IMAGE := ghcr.io/username/$(SERVICE_NAME)
 VERSION := $(shell git describe --tags --always --dirty)
 
 build:

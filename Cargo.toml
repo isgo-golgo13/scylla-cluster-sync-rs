@@ -3,7 +3,7 @@ members = [
     "services/dual-writer",
     "services/sstable-loader",
     "services/dual-reader",
-    "svc-kit",
+    "svckit",
 ]
 resolver = "2"
 
