@@ -1238,7 +1238,7 @@ The SSTableLoader requires its location on the target side.
 
 **WIP** Add Diagrams 
 
-The advantages of target side location are as follows.
+### The Advantages of Target Side Locationing
 
 - **Network Locality** Loads data directly into AWS Cassandra or SycllaDB cluster
 - **Network Throughput** No Cross-Cloud data transfer during bulk load
@@ -1254,11 +1254,13 @@ It is advised that this service location execute on the target side of the trans
 
 **WIP** Add Diagrams 
 
-The advantages of target side location are as follows.
+### The Advantages of Target Side Locationing
 
 - **Network Symmetry** If on AWS, 1 read is local, 1 is remote (vs 2 remote if on GCP)
 - **Cost** Avoid GCP egress for validation reads
 - **After Cutover** Dual Reader validator stays on AWS to focus AWS target Cassandra DB
+
+
 
 ## Cassandra DB vs ScyllaDB Kubernetes Operator Cost Reduction
 
