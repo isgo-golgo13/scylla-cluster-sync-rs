@@ -1258,7 +1258,7 @@ It is advised that this service location execute on the target side of the trans
 
 - **Network Symmetry** If on AWS, 1 read is local, 1 is remote (vs 2 remote if on GCP)
 - **Cost** Avoid GCP egress for validation reads
-- **After Cutover** Dual Reader validator stays on AWS to focus AWS target Cassandra DB
+- **After Cutover** Dual Reader validator stays on AWS to focus AWS target on Cassandra DB
 
 
 
