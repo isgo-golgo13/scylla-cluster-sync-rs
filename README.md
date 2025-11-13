@@ -1236,7 +1236,7 @@ The deployment location of this service is on the target cloud side. If the DB c
 
 The SSTableLoader requires its location on the target side. 
 
-**TODO** Add Diagrams 
+**WIP** Add Diagrams 
 
 The advantages of target side location are as follows.
 
@@ -1251,6 +1251,8 @@ The advantages of target side location are as follows.
 
 The deployment location of this service is NOT strictly enforced on source or target side. 
 It is advised that this service location execute on the target side of the transfer to avoid costly egress costs from the source cloud side (if GCP to AWS), the `dual-reader` service is at its advantage if it is deployed on the AWS side (EKS, EC2, Firecracker).
+
+**WIP** Add Diagrams 
 
 The advantages of target side location are as follows.
 
