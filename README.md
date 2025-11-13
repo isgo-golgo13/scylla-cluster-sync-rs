@@ -1230,6 +1230,34 @@ if __name__ == "__main__":
 ```
 
 
+## The SSTableLoader Bulk Transfer Processor
+
+The deployment location of this service is on the target cloud side. If the DB clusters involved are Cassandra or ScyllaDB on GCP (GKE, GCP Compute Instance VM) on source side and the target Cassandra DB or ScyllaDB Cluster is on AWS (EKS or EC2, Firecracker), the `sstable-loader` service will require is location on the AWS target side. 
+
+The SSTableLoader requires its location on the target side. 
+
+**TODO** Add Diagrams 
+
+The advantages of target side location are as follows.
+
+- **Network Locality** Loads data directly into AWS Cassandra or SycllaDB cluster
+- **Network Throughput** No Cross-Cloud data transfer during bulk load
+- **Cost** Avoids GCP egress charges for bulk data
+- **Performance** Local disk I/O on AWS EC2
+
+
+
+## The Dual-Reader Service
+
+The deployment location of this service is NOT strictly enforced on source or target side. 
+It is advised that this service location execute on the target side of the transfer to avoid costly egress costs from the source cloud side (if GCP to AWS), the `dual-reader` service is at its advantage if it is deployed on the AWS side (EKS, EC2, Firecracker).
+
+The advantages of target side location are as follows.
+
+- **Network Symmetry** If on AWS, 1 read is local, 1 is remote (vs 2 remote if on GCP)
+- **Cost** Avoid GCP egress for validation reads
+- **After Cutover** Dual Reader validator stays on AWS to focus AWS target Cassandra DB
+
 ## Cassandra DB vs ScyllaDB Kubernetes Operator Cost Reduction
 
 The high-cognitive load of configuration and JVM overhead using the Cassandra DB and its deployment using the Cassandra DB Kubernetes Operator.
