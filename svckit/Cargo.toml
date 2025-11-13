@@ -1,11 +1,11 @@
 [package]
-name = "scylla-sync-shared"
+name = "svckit"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
 
 [lib]
-name = "scylla_sync_shared"
+name = "svckit"
 path = "src/lib.rs"
 
 [dependencies]
