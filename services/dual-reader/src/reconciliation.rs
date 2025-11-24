@@ -206,7 +206,7 @@ async fn copy_row_to_target(
 ) -> Result<(), SyncError> {
     let query = format!("INSERT INTO {} JSON ?", table);
     target.get_session()
-        .query_unpaged(&query, &[])
+        .query_unpaged(query.as_str(), &[])
         .await
         .map_err(|e| SyncError::DatabaseError(format!("Failed to copy row: {}", e)))?;
     Ok(())

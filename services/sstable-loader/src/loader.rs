@@ -224,7 +224,7 @@ impl SSTableLoader {
         
         // Execute query on source
         let result = source.get_session()
-            .query_unpaged(&query, &[])
+            .query_unpaged(query.as_str(), &[])
             .await
             .map_err(|e| SyncError::DatabaseError(format!("Source query failed: {}", e)))?;
         
@@ -236,7 +236,7 @@ impl SSTableLoader {
             let insert_query = format!("INSERT INTO {} JSON ?", table);
             
             for _ in 0..row_count {
-                match target.get_session().query_unpaged(&insert_query, &[]).await {
+                match target.get_session().query_unpaged(insert_query.as_str(), &[]).await {
                     Ok(_) => {
                         stats.migrated_rows.fetch_add(1, Ordering::Relaxed);
                     }

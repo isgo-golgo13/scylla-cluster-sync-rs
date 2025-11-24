@@ -12,11 +12,11 @@ Rust or C++ is required to avoid any GC pauses that would fail 99999 SLA deliver
 
 ## The Dual-Write Proxy Service Architecture
 
-The following graphic shows the architectual workflow of the `Dual-Write Proxy` service.
+The following graphic shows the architectual workflow of the `Dual-Write Proxy` service deployed to Kubernetes.
 
 
 
-![dual-write-proxy-architecture-gcp-aws](docs/Dual-Writer-Data-Synch-Architecture.png)
+![dual-write-proxy-architecture-gcp-aws](docs/Dual-Writer-Data-Synch-Architecture-K8s.png)
 
 
 The `Dual-Write` Pattern is executed as follows (high-level). See the following section `The Dual-Write Proxy Service Pattern (Low-Level)` for in-depth execution of the code.
@@ -82,7 +82,7 @@ The critical part of the `Dual-Writer-Proxy` service is to understand the distin
 ```rust
 // SYNCHRONOUS (waits for result):
 let cassandra_result = self.execute_cassandra_query(&query).await;
-//                                                            ^^^^^ 
+//                                                            
 // This 'await': "Wait until Cassandra responds"
 // The function PAUSES here untilthe result is retrieved
 
@@ -133,11 +133,21 @@ spec:
           value: "DualWriteAsync"
 ```
 
+## The Dual-Write DB Duality Functionality
+
+
+![dual-writer-duality-of-service-configuration]
+
+The `dual-writer` design uses the `Factory Design Pattern` in crate `svckit/src/database/factory.rs` to instantiate the correct connection resource (Scylla to Scylla or Cassandra to Cassandra, or mixed-mode source of the DB and the target DB for the data migration). The ScyllaDB driver is 100% adaptable to Cassandra (to the latest Cassandra 4 driver). The client that requires a data migration of a ScyllaDB to ScyllaDB scenario will configure the values in the provided root directory `config/dual-writer-scylla.yaml` or `config/dual-writer-cassandra.yaml`, however these are templates and the actual configuration of each will go into a Kubernetes ConfigMap and have the ConfigMap referenced in the Kubernetes `Deployment` spec. No configuration logic for the dual-writer is hard-coded. 
+
+
+
 
 ## The Dual-Write Proxy Service Architecture (Alternate No-GKE, No-EKS)
 
 The following graphic shows the architectual workflow of the `Dual-Write Proxy` service deployed directly to VMs (source VM on GCP and sink/target VM on AWS) without Kubernetes.
 
+**INSERT NON K8s IMAGE**
 
 
 ## The Dual-Write Proxy Service Pattern (Low-Level)
@@ -1423,6 +1433,14 @@ cargo build --bin dual-writer
 cargo build --bin dual-reader
 cargo build --bin sstable-loader
 ```
+
+**Or** with the provided root Makefile.
+
+
+ 
+
+
+
 
 
 

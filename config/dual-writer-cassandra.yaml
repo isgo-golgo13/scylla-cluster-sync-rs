@@ -1,0 +1,43 @@
+# Dual-Writer Configuration - Cassandra 4.x to Cassandra 4.x
+# config/dual-writer-cassandra.yaml
+# For: cassandra-cluster-sync-rs (Iconik client)
+
+source:
+  driver: "cassandra"
+  hosts:
+    - "gcp-cassandra-node-1.internal"
+    - "gcp-cassandra-node-2.internal"
+    - "gcp-cassandra-node-3.internal"
+  port: 9042
+  keyspace: "iconik_production"
+  username: "cassandra_admin"
+  password: "secure_password"
+  connection_timeout_secs: 5
+  request_timeout_secs: 10
+  pool_size: 4
+
+target:
+  driver: "cassandra"
+  hosts:
+    - "aws-cassandra-node-1.internal"
+    - "aws-cassandra-node-2.internal"
+    - "aws-cassandra-node-3.internal"
+  port: 9042
+  keyspace: "iconik_production"
+  username: "cassandra_admin"
+  password: "secure_password"
+  connection_timeout_secs: 5
+  request_timeout_secs: 10
+  pool_size: 4
+
+writer:
+  mode: "DualAsync"
+  shadow_timeout_ms: 5000
+  retry_interval_secs: 60
+  max_retry_attempts: 3
+  batch_size: 100
+
+observability:
+  metrics_port: 9090
+  log_level: "info"
+  jaeger_endpoint: null

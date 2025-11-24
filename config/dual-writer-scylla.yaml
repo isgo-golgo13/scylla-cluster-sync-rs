@@ -1,0 +1,42 @@
+# Dual-Writer Configuration - ScyllaDB to ScyllaDB
+# config/dual-writer.yaml
+
+source:
+  driver: "scylla"
+  hosts:
+    - "scylla-node-1.gcp.internal"
+    - "scylla-node-2.gcp.internal"
+    - "scylla-node-3.gcp.internal"
+  port: 9042
+  keyspace: "production"
+  username: "scylla_user"
+  password: "secure_password"
+  connection_timeout_secs: 5
+  request_timeout_secs: 10
+  pool_size: 4
+
+target:
+  driver: "scylla"
+  hosts:
+    - "scylla-node-1.aws.internal"
+    - "scylla-node-2.aws.internal"
+    - "scylla-node-3.aws.internal"
+  port: 9042
+  keyspace: "production"
+  username: "scylla_user"
+  password: "secure_password"
+  connection_timeout_secs: 5
+  request_timeout_secs: 10
+  pool_size: 4
+
+writer:
+  mode: "DualAsync"
+  shadow_timeout_ms: 5000
+  retry_interval_secs: 60
+  max_retry_attempts: 3
+  batch_size: 100
+
+observability:
+  metrics_port: 9090
+  log_level: "info"
+  jaeger_endpoint: null

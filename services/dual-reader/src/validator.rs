@@ -42,12 +42,12 @@ impl Validator {
         let target_query = format!("SELECT * FROM {}", table);
         
         let source_result = self.source_conn.get_session()
-            .query_unpaged(&source_query, &[])
+            .query_unpaged(source_query.as_str(), &[])
             .await
             .map_err(|e| SyncError::DatabaseError(format!("Source query failed: {}", e)))?;
         
         let target_result = self.target_conn.get_session()
-            .query_unpaged(&target_query, &[])
+            .query_unpaged(target_query.as_str(), &[])
             .await
             .map_err(|e| SyncError::DatabaseError(format!("Target query failed: {}", e)))?;
         
