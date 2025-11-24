@@ -17,7 +17,7 @@ impl HealthChecker {
     pub async fn check_source(&self) -> bool {
         self.source_conn
             .get_session()
-            .query("SELECT now() FROM system.local", &[])
+            .query_unpaged("SELECT now() FROM system.local", &[])
             .await
             .is_ok()
     }
@@ -25,7 +25,7 @@ impl HealthChecker {
     pub async fn check_target(&self) -> bool {
         self.target_conn
             .get_session()
-            .query("SELECT now() FROM system.local", &[])
+            .query_unpaged("SELECT now() FROM system.local", &[])
             .await
             .is_ok()
     }

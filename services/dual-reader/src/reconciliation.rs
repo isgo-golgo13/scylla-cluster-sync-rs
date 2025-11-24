@@ -202,11 +202,11 @@ pub enum ReconciliationAction {
 async fn copy_row_to_target(
     target: &ScyllaConnection,
     table: &str,
-    row_data: &RowData,
+    _row_data: &RowData,
 ) -> Result<(), SyncError> {
     let query = format!("INSERT INTO {} JSON ?", table);
     target.get_session()
-        .query(&query, &[])
+        .query_unpaged(&query, &[])
         .await
         .map_err(|e| SyncError::DatabaseError(format!("Failed to copy row: {}", e)))?;
     Ok(())

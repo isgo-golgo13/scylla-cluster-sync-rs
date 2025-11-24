@@ -11,8 +11,8 @@ use serde_json::json;
 use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
 use tracing::info;
 
-use svckit::types::{WriteRequest, WriteResponse};
-use crate::writer::DualWriter;
+use svckit::types::WriteRequest;
+use crate::writer::{DualWriter, WriteResponse};
 use crate::config::DualWriterConfig;
 
 pub async fn start_server(writer: Arc<DualWriter>, port: u16) -> anyhow::Result<()> {
@@ -40,16 +40,18 @@ async fn handle_write(
     Json(request): Json<WriteRequest>,
 ) -> impl IntoResponse {
     match writer.write(request).await {
-        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Ok(response) => (StatusCode::OK, Json(json!({
+            "success": response.success,
+            "request_id": response.request_id,
+            "write_timestamp": response.write_timestamp,
+            "latency_ms": response.latency_ms,
+            "error": response.error,
+        }))).into_response(),
         Err(e) => {
-            let error_response = WriteResponse {
-                success: false,
-                request_id: uuid::Uuid::new_v4(),
-                write_timestamp: 0,
-                latency_ms: 0.0,
-                error: Some(e.to_string()),
-            };
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                "success": false,
+                "error": e.to_string(),
+            }))).into_response()
         }
     }
 }

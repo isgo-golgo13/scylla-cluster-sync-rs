@@ -7,7 +7,7 @@ use tracing::{info, warn, error};
 use uuid::Uuid;
 
 use svckit::{
-    types::{WriteRequest, WriteResponse},
+    types::WriteRequest,
     errors::SyncError,
     database::{ScyllaConnection, DatabaseConnection, QueryBuilder},
     metrics,
@@ -30,12 +30,20 @@ struct FailedWrite {
     first_attempt: SystemTime,
 }
 
-#[derive(Debug, Default)]
-struct WriterStats {
-    total_writes: u64,
-    successful_writes: u64,
-    failed_writes: u64,
-    retried_writes: u64,
+#[derive(Debug, Default, Clone)]
+pub struct WriterStats {
+    pub total_writes: u64,
+    pub successful_writes: u64,
+    pub failed_writes: u64,
+    pub retried_writes: u64,
+}
+
+pub struct WriteResponse {
+    pub success: bool,
+    pub request_id: Uuid,
+    pub write_timestamp: i64,
+    pub latency_ms: f64,
+    pub error: Option<String>,
 }
 
 impl DualWriter {
@@ -78,12 +86,14 @@ impl DualWriter {
         };
         
         // Update stats
-        let mut stats = self.stats.lock();
-        stats.total_writes += 1;
-        if result.is_ok() {
-            stats.successful_writes += 1;
-        } else {
-            stats.failed_writes += 1;
+        {
+            let mut stats = self.stats.lock();
+            stats.total_writes += 1;
+            if result.is_ok() {
+                stats.successful_writes += 1;
+            } else {
+                stats.failed_writes += 1;
+            }
         }
         
         // Record metrics
@@ -134,13 +144,25 @@ impl DualWriter {
                 Ok(Ok(_)) => {
                     info!("Shadow write successful for request {}", request_clone.request_id);
                 }
-                Ok(Err(e)) | Err(_) => {
+                Ok(Err(e)) => {
                     warn!("Shadow write failed for request {}: {:?}", request_clone.request_id, e);
                     failed_writes.insert(
                         request_clone.request_id,
                         FailedWrite {
                             request: request_clone,
-                            error: format!("{:?}", e),
+                            error: e.to_string(),
+                            attempts: 1,
+                            first_attempt: SystemTime::now(),
+                        }
+                    );
+                }
+                Err(_timeout_err) => {
+                    warn!("Shadow write timed out for request {}", request_clone.request_id);
+                    failed_writes.insert(
+                        request_clone.request_id,
+                        FailedWrite {
+                            request: request_clone.clone(),
+                            error: "Timeout".to_string(),
                             attempts: 1,
                             first_attempt: SystemTime::now(),
                         }
@@ -206,13 +228,15 @@ impl DualWriter {
             tokio::time::sleep(interval).await;
             
             let mut to_remove = Vec::new();
+            let mut to_update = Vec::new();
             
             for entry in self.failed_writes.iter() {
-                let (id, mut write) = entry.pair();
+                let id = *entry.key();
+                let write = entry.value().clone();
                 
                 if write.attempts >= max_attempts {
                     error!("Abandoning write {} after {} attempts", id, write.attempts);
-                    to_remove.push(*id);
+                    to_remove.push(id);
                     continue;
                 }
                 
@@ -220,21 +244,28 @@ impl DualWriter {
                 match self.target_conn.execute(&query, write.request.values.clone()).await {
                     Ok(_) => {
                         info!("Retry successful for write {}", id);
-                        to_remove.push(*id);
+                        to_remove.push(id);
                         
                         let mut stats = self.stats.lock();
                         stats.retried_writes += 1;
                     }
                     Err(e) => {
-                        write.attempts += 1;
-                        write.error = e.to_string();
-                        warn!("Retry {} failed for write {}: {}", write.attempts, id, e);
+                        warn!("Retry {} failed for write {}: {}", write.attempts + 1, id, e);
+                        to_update.push((id, FailedWrite {
+                            attempts: write.attempts + 1,
+                            error: e.to_string(),
+                            ..write
+                        }));
                     }
                 }
             }
             
             for id in to_remove {
                 self.failed_writes.remove(&id);
+            }
+            
+            for (id, updated_write) in to_update {
+                self.failed_writes.insert(id, updated_write);
             }
         }
     }

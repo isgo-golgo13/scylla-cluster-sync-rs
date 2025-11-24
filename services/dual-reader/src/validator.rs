@@ -30,7 +30,7 @@ impl Validator {
         &self,
         table: &str,
         sample_rate: f64,
-        batch_size: usize,
+        _batch_size: usize,
     ) -> Result<ValidationResult, SyncError> {
         info!("Validating table: {} (sample_rate: {})", table, sample_rate);
         
@@ -42,48 +42,44 @@ impl Validator {
         let target_query = format!("SELECT * FROM {}", table);
         
         let source_result = self.source_conn.get_session()
-            .query(&source_query, &[])
+            .query_unpaged(&source_query, &[])
             .await
             .map_err(|e| SyncError::DatabaseError(format!("Source query failed: {}", e)))?;
         
         let target_result = self.target_conn.get_session()
-            .query(&target_query, &[])
+            .query_unpaged(&target_query, &[])
             .await
             .map_err(|e| SyncError::DatabaseError(format!("Target query failed: {}", e)))?;
         
-        if let Some(source_rows) = source_result.rows {
-            let source_count = source_rows.len();
-            info!("Source has {} rows", source_count);
+        let source_count = source_result.rows_num().unwrap_or(0);
+        info!("Source has {} rows", source_count);
+        
+        let rows_to_check = ((source_count as f64) * sample_rate).ceil() as usize;
+        rows_checked = rows_to_check as u64;
+        
+        let target_count = target_result.rows_num().unwrap_or(0);
+        info!("Target has {} rows", target_count);
+        
+        if source_count == target_count {
+            rows_matched = rows_checked;
+        } else {
+            warn!("Row count mismatch: source={}, target={}", source_count, target_count);
             
-            let rows_to_check = ((source_count as f64) * sample_rate).ceil() as usize;
-            rows_checked = rows_to_check as u64;
-            
-            if let Some(target_rows) = target_result.rows {
-                let target_count = target_rows.len();
-                info!("Target has {} rows", target_count);
-                
-                if source_count == target_count {
-                    rows_matched = rows_checked;
-                } else {
-                    warn!("Row count mismatch: source={}, target={}", source_count, target_count);
-                    
-                    if source_count > target_count {
-                        for _ in 0..(source_count - target_count).min(10) {
-                            discrepancies.push(Discrepancy {
-                                id: Uuid::new_v4(),
-                                table: table.to_string(),
-                                key: HashMap::new(),
-                                discrepancy_type: DiscrepancyType::MissingInTarget,
-                                source_value: Some(RowData {
-                                    columns: HashMap::new(),
-                                    writetime: None,
-                                    ttl: None,
-                                }),
-                                target_value: None,
-                                detected_at: Utc::now(),
-                            });
-                        }
-                    }
+            if source_count > target_count {
+                for _ in 0..(source_count - target_count).min(10) {
+                    discrepancies.push(Discrepancy {
+                        id: Uuid::new_v4(),
+                        table: table.to_string(),
+                        key: HashMap::new(),
+                        discrepancy_type: DiscrepancyType::MissingInTarget,
+                        source_value: Some(RowData {
+                            columns: HashMap::new(),
+                            writetime: None,
+                            ttl: None,
+                        }),
+                        target_value: None,
+                        detected_at: Utc::now(),
+                    });
                 }
             }
         }
@@ -99,7 +95,7 @@ impl Validator {
             rows_checked,
             rows_matched,
             discrepancies,
-            consistency_percentage,
+            consistency_percentage: consistency_percentage as f32,
             validation_time: Utc::now(),
         })
     }

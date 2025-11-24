@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use dashmap::DashMap;
-use tracing::{info, warn, error};
+use tracing::{info, error};
 use uuid::Uuid;
 
 use svckit::{
@@ -197,15 +197,16 @@ impl DualReader {
     
     pub async fn health_check(&self) -> Result<(), SyncError> {
         self.source_conn.get_session()
-            .query("SELECT now() FROM system.local", &[])
+            .query_unpaged("SELECT now() FROM system.local", &[])
             .await
             .map_err(|e| SyncError::DatabaseError(format!("Source health check failed: {}", e)))?;
         
         self.target_conn.get_session()
-            .query("SELECT now() FROM system.local", &[])
+            .query_unpaged("SELECT now() FROM system.local", &[])
             .await
             .map_err(|e| SyncError::DatabaseError(format!("Target health check failed: {}", e)))?;
         
         Ok(())
     }
 }
+

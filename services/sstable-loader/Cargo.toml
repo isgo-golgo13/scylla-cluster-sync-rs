@@ -6,7 +6,7 @@ authors = ["Engine Vector <admin@enginevector.io>"]
 description = "High-performance SSTable bulk loader for ScyllaDB/Cassandra cluster migration"
 
 [dependencies]
-# Workspace dependencies
+# Workspace dependency
 svckit = { path = "../../svckit" }
 
 # Async runtime
@@ -35,17 +35,21 @@ prometheus = "0.13"
 # HTTP server
 axum = "0.7"
 tower = "0.5"
+tower-http = { version = "0.5", features = ["trace", "cors", "compression-full"] }
 
 # Error handling
 anyhow = "1.0"
 thiserror = "1.0"
 
-# Async utilities
+# Async
 futures = "0.3"
 async-trait = "0.1"
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
 
 # Progress tracking
 indicatif = "0.17"
@@ -53,7 +57,7 @@ indicatif = "0.17"
 # Parallelism
 rayon = "1.10"
 
-# Compression (for SSTable handling)
+# Compression
 lz4 = "1.24"
 snap = "1.1"
 

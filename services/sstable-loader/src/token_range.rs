@@ -67,14 +67,13 @@ impl TokenRangeCalculator {
     
     async fn get_cluster_size(&self) -> Result<usize, SyncError> {
         // Query system.peers to count nodes
-        let query = "SELECT peer FROM system.peers";
         let result = self.source_conn.get_session()
-            .query(query, &[])
+            .query_unpaged("SELECT peer FROM system.peers", &[])
             .await
             .map_err(|e| SyncError::DatabaseError(format!("Failed to query peers: {}", e)))?;
         
         // Number of peers + 1 (local node)
-        let num_peers = result.rows.map(|r| r.len()).unwrap_or(0);
+        let num_peers = result.rows_num().unwrap_or(0);
         let num_nodes = num_peers + 1;
         
         info!("Detected {} nodes in cluster", num_nodes);

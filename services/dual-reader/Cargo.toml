@@ -6,7 +6,7 @@ authors = ["Engine Vector <admin@enginevector.io>"]
 description = "Dual-reader validation service for ScyllaDB/Cassandra cluster synchronization"
 
 [dependencies]
-# Workspace dependencies
+# Workspace dependency
 svckit = { path = "../../svckit" }
 
 # Async runtime
@@ -35,6 +35,7 @@ prometheus = "0.13"
 # HTTP server
 axum = "0.7"
 tower = "0.5"
+tower-http = { version = "0.5", features = ["trace", "cors", "compression-full"] }
 
 # Error handling
 anyhow = "1.0"
@@ -46,6 +47,15 @@ async-trait = "0.1"
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Concurrency
+dashmap = "6.1"
+
+# UUID
+uuid = { version = "1.10", features = ["v4", "serde"] }
 
 [[bin]]
 name = "dual-reader"

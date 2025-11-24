@@ -9,7 +9,6 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use svckit::{
     errors::SyncError,
     database::ScyllaConnection,
-    metrics,
 };
 use crate::config::{SSTableLoaderConfig, TableConfig};
 use crate::token_range::{TokenRange, TokenRangeCalculator};
@@ -225,30 +224,25 @@ impl SSTableLoader {
         
         // Execute query on source
         let result = source.get_session()
-            .query(&query, &[])
+            .query_unpaged(&query, &[])
             .await
             .map_err(|e| SyncError::DatabaseError(format!("Source query failed: {}", e)))?;
         
-        if let Some(rows) = result.rows {
-            let row_count = rows.len();
+        let row_count = result.rows_num().unwrap_or(0);
+        if row_count > 0 {
             stats.total_rows.fetch_add(row_count as u64, Ordering::Relaxed);
             
-            // Process in batches
-            for chunk in rows.chunks(batch_size) {
-                // Insert batch to target
-                // In production, use batch statements or prepared statements
-                for _row in chunk {
-                    // Simplified insert logic
-                    let insert_query = format!("INSERT INTO {} JSON ?", table);
-                    
-                    match target.get_session().query(&insert_query, &[]).await {
-                        Ok(_) => {
-                            stats.migrated_rows.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Err(e) => {
-                            error!("Failed to insert row: {}", e);
-                            stats.failed_rows.fetch_add(1, Ordering::Relaxed);
-                        }
+            // Process in batches (simplified - in production use proper row iteration)
+            let insert_query = format!("INSERT INTO {} JSON ?", table);
+            
+            for _ in 0..row_count {
+                match target.get_session().query_unpaged(&insert_query, &[]).await {
+                    Ok(_) => {
+                        stats.migrated_rows.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(e) => {
+                        error!("Failed to insert row: {}", e);
+                        stats.failed_rows.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }

@@ -1,7 +1,9 @@
+use std::num::NonZeroUsize;
 use std::sync::Arc;
-use scylla::{Session, SessionBuilder};
+use scylla::{Session, SessionBuilder, QueryResult};
 use scylla::transport::session::PoolSize;
-use tracing::{info, error};
+use scylla::serialize::row::SerializeRow;
+use tracing::info;
 
 use crate::config::DatabaseConfig;
 use crate::errors::SyncError;
@@ -10,7 +12,7 @@ use crate::errors::SyncError;
 #[async_trait::async_trait]
 pub trait DatabaseConnection: Send + Sync {
     async fn execute(&self, query: &str, values: Vec<serde_json::Value>) -> Result<(), SyncError>;
-    async fn query(&self, query: &str, values: Vec<serde_json::Value>) -> Result<Vec<scylla::QueryResult>, SyncError>;
+    async fn query(&self, query: &str, values: Vec<serde_json::Value>) -> Result<QueryResult, SyncError>;
     fn get_session(&self) -> &Session;
 }
 
@@ -31,9 +33,12 @@ impl ScyllaConnection {
             .map(|h| format!("{}:{}", h, config.port))
             .collect();
 
+        let pool_size = NonZeroUsize::new(config.pool_size as usize)
+            .unwrap_or(NonZeroUsize::new(4).unwrap());
+
         let mut session_builder = SessionBuilder::new()
             .known_nodes(&contact_points)
-            .pool_size(PoolSize::PerShard(config.pool_size as usize))
+            .pool_size(PoolSize::PerShard(pool_size))
             .use_keyspace(&config.keyspace, true);
 
         // Add authentication if provided
@@ -67,45 +72,30 @@ impl ScyllaConnection {
             .map_err(|e| SyncError::DatabaseError(format!("Failed to prepare statement: {}", e)))
     }
 
-    /// Execute a batch of queries
-    pub async fn batch_execute(
-        &self,
-        queries: Vec<(String, Vec<serde_json::Value>)>,
-    ) -> Result<(), SyncError> {
-        use scylla::batch::Batch;
-
-        let mut batch = Batch::default();
-        
-        for (query, _) in &queries {
-            batch.append_statement(query.as_str());
-        }
-
-        // Convert JSON values to Scylla values
-        let values: Vec<Vec<scylla::frame::value::Value>> = queries
-            .into_iter()
-            .map(|(_, vals)| {
-                vals.iter()
-                    .map(Self::json_to_scylla_value)
-                    .collect()
-            })
-            .collect();
-
+    /// Execute a simple query without values
+    pub async fn execute_simple(&self, query: &str) -> Result<QueryResult, SyncError> {
         self.session
-            .batch(&batch, values)
+            .query_unpaged(query, ())
             .await
-            .map_err(|e| SyncError::DatabaseError(format!("Batch execution failed: {}", e)))?;
+            .map_err(|e| SyncError::DatabaseError(format!("Query execution failed: {}", e)))
+    }
 
-        Ok(())
+    /// Execute a query with serializable values
+    pub async fn execute_with_values<V: SerializeRow>(
+        &self,
+        query: &str,
+        values: V,
+    ) -> Result<QueryResult, SyncError> {
+        self.session
+            .query_unpaged(query, values)
+            .await
+            .map_err(|e| SyncError::DatabaseError(format!("Query execution failed: {}", e)))
     }
 
     /// Get token ranges for parallel processing
     pub async fn get_token_ranges(&self) -> Result<Vec<(i64, i64)>, SyncError> {
         // Query system tables to get actual token ranges
-        let query = "SELECT tokens FROM system.local";
-        let result = self.session
-            .query(query, &[])
-            .await
-            .map_err(|e| SyncError::DatabaseError(format!("Failed to query token ranges: {}", e)))?;
+        let _result = self.execute_simple("SELECT tokens FROM system.local").await?;
 
         // For simplicity, generate equal-sized token ranges
         // In production, parse actual token ownership from cluster
@@ -133,13 +123,10 @@ impl ScyllaConnection {
 
     /// Estimate optimal number of ranges based on cluster topology
     async fn estimate_optimal_ranges(&self) -> Result<usize, SyncError> {
-        let query = "SELECT peer FROM system.peers";
-        let result = self.session
-            .query(query, &[])
-            .await
-            .map_err(|e| SyncError::DatabaseError(format!("Failed to query peers: {}", e)))?;
+        let result = self.execute_simple("SELECT peer FROM system.peers").await?;
 
-        let num_nodes = result.rows.as_ref().map(|r| r.len()).unwrap_or(0) + 1; // +1 for local node
+        let num_peers = result.rows_num().unwrap_or(0);
+        let num_nodes = num_peers + 1; // +1 for local node
         
         // Heuristic: 4 ranges per core, assume 8 cores per node
         let optimal_ranges = num_nodes * 8 * 4;
@@ -147,80 +134,36 @@ impl ScyllaConnection {
         info!("Estimated {} optimal ranges for {} nodes", optimal_ranges, num_nodes);
         Ok(optimal_ranges.max(256)) // Minimum 256 ranges
     }
-
-    /// Convert JSON value to Scylla CQL value
-    fn json_to_scylla_value(value: &serde_json::Value) -> scylla::frame::value::Value {
-        use scylla::frame::value::Value;
-        
-        match value {
-            serde_json::Value::Null => Value::Null,
-            serde_json::Value::Bool(b) => Value::Boolean(*b),
-            serde_json::Value::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    Value::BigInt(i)
-                } else if let Some(f) = n.as_f64() {
-                    Value::Double(f)
-                } else {
-                    Value::Null
-                }
-            }
-            serde_json::Value::String(s) => Value::Text(s.clone()),
-            serde_json::Value::Array(_) => {
-                // Simplified: arrays need proper type handling
-                Value::Null
-            }
-            serde_json::Value::Object(_) => {
-                // Simplified: objects need proper type handling
-                Value::Null
-            }
-        }
-    }
-
-    /// Convert Scylla values to JSON
-    fn scylla_value_to_json(value: &scylla::frame::value::Value) -> serde_json::Value {
-        use scylla::frame::value::Value;
-        
-        match value {
-            Value::Null => serde_json::Value::Null,
-            Value::Boolean(b) => serde_json::Value::Bool(*b),
-            Value::BigInt(i) => serde_json::json!(i),
-            Value::Int(i) => serde_json::json!(i),
-            Value::Double(f) => serde_json::json!(f),
-            Value::Float(f) => serde_json::json!(f),
-            Value::Text(s) => serde_json::Value::String(s.clone()),
-            _ => serde_json::Value::Null,
-        }
-    }
 }
 
 #[async_trait::async_trait]
 impl DatabaseConnection for ScyllaConnection {
     async fn execute(&self, query: &str, values: Vec<serde_json::Value>) -> Result<(), SyncError> {
-        let scylla_values: Vec<scylla::frame::value::Value> = values
-            .iter()
-            .map(Self::json_to_scylla_value)
-            .collect();
-
-        self.session
-            .query(query, scylla_values)
-            .await
-            .map_err(|e| SyncError::DatabaseError(format!("Query execution failed: {}", e)))?;
-
+        if values.is_empty() {
+            self.execute_simple(query).await?;
+        } else {
+            // For complex values, serialize to JSON and use JSON insert
+            let json_str = serde_json::to_string(&values)
+                .map_err(|e| SyncError::DatabaseError(format!("JSON serialization failed: {}", e)))?;
+            self.session
+                .query_unpaged(query, (json_str,))
+                .await
+                .map_err(|e| SyncError::DatabaseError(format!("Query execution failed: {}", e)))?;
+        }
         Ok(())
     }
 
-    async fn query(&self, query: &str, values: Vec<serde_json::Value>) -> Result<Vec<scylla::QueryResult>, SyncError> {
-        let scylla_values: Vec<scylla::frame::value::Value> = values
-            .iter()
-            .map(Self::json_to_scylla_value)
-            .collect();
-
-        let result = self.session
-            .query(query, scylla_values)
-            .await
-            .map_err(|e| SyncError::DatabaseError(format!("Query failed: {}", e)))?;
-
-        Ok(vec![result])
+    async fn query(&self, query: &str, values: Vec<serde_json::Value>) -> Result<QueryResult, SyncError> {
+        if values.is_empty() {
+            self.execute_simple(query).await
+        } else {
+            let json_str = serde_json::to_string(&values)
+                .map_err(|e| SyncError::DatabaseError(format!("JSON serialization failed: {}", e)))?;
+            self.session
+                .query_unpaged(query, (json_str,))
+                .await
+                .map_err(|e| SyncError::DatabaseError(format!("Query execution failed: {}", e)))
+        }
     }
 
     fn get_session(&self) -> &Session {
@@ -233,9 +176,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_json_to_scylla_value() {
-        let json_int = serde_json::json!(42);
-        let val = ScyllaConnection::json_to_scylla_value(&json_int);
-        assert!(matches!(val, scylla::frame::value::Value::BigInt(42)));
+    fn test_nonzero_pool_size() {
+        let pool_size = NonZeroUsize::new(4).unwrap();
+        assert_eq!(pool_size.get(), 4);
     }
 }
