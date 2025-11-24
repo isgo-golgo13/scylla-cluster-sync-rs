@@ -133,7 +133,7 @@ spec:
           value: "DualWriteAsync"
 ```
 
-## The Dual-Write DB Duality Functionality
+## The Dual-Write DB Duality of Functionality
 
 
 ![dual-writer-duality-of-service-configuration](docs/Dual-Writer-Docker-Image-ConfigMap.png)
@@ -148,7 +148,7 @@ The `dual-writer` design uses the `Factory Design Pattern` in crate `svckit/src/
 
 The following graphic shows the architectual workflow of the `Dual-Write Proxy` service deployed directly to VMs (source VM on GCP and sink/target VM on AWS) without Kubernetes.
 
-**INSERT NON K8s IMAGE**
+
 
 
 ## The Dual-Write Proxy Service Pattern (Low-Level)
