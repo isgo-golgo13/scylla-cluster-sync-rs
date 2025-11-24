@@ -11,7 +11,7 @@ use serde_json::json;
 use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
 use tracing::info;
 
-use scylla_sync_shared::types::{WriteRequest, WriteResponse};
+use svckit::types::{WriteRequest, WriteResponse};
 use crate::writer::DualWriter;
 use crate::config::DualWriterConfig;
 

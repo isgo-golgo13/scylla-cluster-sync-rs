@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use scylla_sync_shared::database::ScyllaConnection;
+use svckit::database::ScyllaConnection;
 
 pub struct HealthChecker {
     source_conn: Arc<ScyllaConnection>,

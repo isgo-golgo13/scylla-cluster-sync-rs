@@ -6,7 +6,7 @@ use parking_lot::Mutex;
 use tracing::{info, warn, error};
 use uuid::Uuid;
 
-use scylla_sync_shared::{
+use svckit::{
     types::{WriteRequest, WriteResponse},
     errors::SyncError,
     database::{ScyllaConnection, DatabaseConnection, QueryBuilder},
