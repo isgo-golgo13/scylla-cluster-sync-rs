@@ -1245,7 +1245,7 @@ if __name__ == "__main__":
 
 The deployment location of this service is on the target cloud side. If the DB clusters involved are Cassandra or ScyllaDB on GCP (GKE, GCP Compute Instance VM) on source side and the target Cassandra DB or ScyllaDB Cluster is on AWS (EKS or EC2, Firecracker), the `sstable-loader` service will require is location on the AWS target side. 
 
-The SSTableLoader requires its location on the target side. 
+The SSTableLoader requires its location on the **target** side. 
 
 
 ### The Advantages of Target Side Locationing
@@ -1258,8 +1258,8 @@ The SSTableLoader requires its location on the target side.
 
 ## The Dual-Reader Service
 
-The deployment location of this service is NOT strictly enforced on source or target side. 
-It is advised that this service location execute on the target side of the transfer to avoid costly egress costs from the source cloud side (if GCP to AWS), the `dual-reader` service is at its advantage if it is deployed on the AWS side (EKS, EC2, Firecracker).
+The deployment location of this service is **NOT** strictly enforced on source or target side. 
+It is advised that this service location execute on the **target** side of the transfer to avoid costly egress costs from the source cloud side (if GCP to AWS), the `dual-reader` service is at its advantage if it is deployed on the AWS side (EKS, EC2, Firecracker).
 
 
 ### The Advantages of Target Side Locationing
