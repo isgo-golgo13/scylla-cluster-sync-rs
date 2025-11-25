@@ -1247,7 +1247,6 @@ The deployment location of this service is on the target cloud side. If the DB c
 
 The SSTableLoader requires its location on the target side. 
 
-**WIP** Add Diagrams 
 
 ### The Advantages of Target Side Locationing
 
@@ -1257,19 +1256,24 @@ The SSTableLoader requires its location on the target side.
 - **Performance** Local disk I/O on AWS EC2
 
 
-
 ## The Dual-Reader Service
 
 The deployment location of this service is NOT strictly enforced on source or target side. 
 It is advised that this service location execute on the target side of the transfer to avoid costly egress costs from the source cloud side (if GCP to AWS), the `dual-reader` service is at its advantage if it is deployed on the AWS side (EKS, EC2, Firecracker).
 
-**WIP** Add Diagrams 
 
 ### The Advantages of Target Side Locationing
 
 - **Network Symmetry** If on AWS, 1 read is local, 1 is remote (vs 2 remote if on GCP)
 - **Cost** Avoid GCP egress for validation reads
 - **After Cutover** Dual Reader validator stays on AWS to focus AWS target on Cassandra DB
+
+
+
+The following architectural workflow graphic shows the entire fleet of the `scylla/cassandra-cluster-sync` application of the dual-writer proxy service, sstable-loader service and dual-writer service (or the data checksumming processor).
+
+![entire-scylla-cluster-sync-workflow]
+
 
 
 
