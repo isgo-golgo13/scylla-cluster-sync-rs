@@ -1280,7 +1280,7 @@ The following architectural workflow graphic shows the entire fleet of the `scyl
 ![entire-scylla-cluster-sync-workflow-vm-native](docs/Full-Service-Architecture-VM-Native.png)
 
 
-## Cassandra DB vs ScyllaDB Kubernetes Operator Cost Reduction
+## CassandraDB vs ScyllaDB Kubernetes Operator Cost Reduction
 
 The high-cognitive load of configuration and JVM overhead using the Cassandra DB and its deployment using the Cassandra DB Kubernetes Operator.
 
