@@ -13,6 +13,7 @@ use svckit::{
     metrics,
 };
 use crate::config::{DualWriterConfig, WriteMode};
+use crate::filter::{FilterGovernor, FilterConfig};  // <-- Added
 
 pub struct DualWriter {
     source_conn: Arc<ScyllaConnection>,
@@ -20,6 +21,7 @@ pub struct DualWriter {
     config: Arc<RwLock<DualWriterConfig>>,
     failed_writes: Arc<DashMap<Uuid, FailedWrite>>,
     stats: Arc<Mutex<WriterStats>>,
+    filter_governor: Arc<FilterGovernor>,  // <-- Added
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +38,7 @@ pub struct WriterStats {
     pub successful_writes: u64,
     pub failed_writes: u64,
     pub retried_writes: u64,
+    pub filtered_writes: u64,  // <-- Added
 }
 
 pub struct WriteResponse {
@@ -47,9 +50,10 @@ pub struct WriteResponse {
 }
 
 impl DualWriter {
-    pub async fn new(config: DualWriterConfig) -> Result<Self, SyncError> {
+    pub async fn new(config: DualWriterConfig, filter_config: FilterConfig) -> Result<Self, SyncError> {  // <-- Modified
         let source_conn = Arc::new(ScyllaConnection::new(&config.source).await?);
         let target_conn = Arc::new(ScyllaConnection::new(&config.target).await?);
+        let filter_governor = Arc::new(FilterGovernor::new(&filter_config));  // <-- Added
         
         info!("Initialized connections to source and target ScyllaDB clusters");
         
@@ -59,6 +63,7 @@ impl DualWriter {
             config: Arc::new(RwLock::new(config)),
             failed_writes: Arc::new(DashMap::new()),
             stats: Arc::new(Mutex::new(WriterStats::default())),
+            filter_governor,  // <-- Added
         })
     }
     
@@ -126,6 +131,28 @@ impl DualWriter {
         self.source_conn.execute(&query, request.values.clone()).await?;
         let primary_latency = start.elapsed().as_secs_f64() * 1000.0;
         
+        // Check filter before shadow write  // <-- Added
+        let should_write_to_target = self.filter_governor.should_write_to_target(request).await;
+        
+        if !should_write_to_target {
+            // Tenant/table is blacklisted - skip target write
+            info!(
+                "Skipping target write for blacklisted request: {}.{}", 
+                request.keyspace, request.table
+            );
+            
+            let mut stats = self.stats.lock();
+            stats.filtered_writes += 1;
+            
+            return Ok(WriteResponse {
+                success: true,
+                request_id: request.request_id,
+                write_timestamp: request.timestamp.unwrap_or(0),
+                latency_ms: primary_latency,
+                error: None,
+            });
+        }
+        
         // Shadow write to target (async, non-blocking)
         let target_conn = self.target_conn.clone();
         let request_clone = request.clone();
@@ -183,6 +210,25 @@ impl DualWriter {
     async fn write_dual_sync(&self, request: &WriteRequest) -> Result<WriteResponse, SyncError> {
         let query = QueryBuilder::build_insert_query(request);
         let start = Instant::now();
+        
+        // Check filter  // <-- Added
+        let should_write_to_target = self.filter_governor.should_write_to_target(request).await;
+        
+        if !should_write_to_target {
+            // Blacklisted - write to source only
+            self.source_conn.execute(&query, request.values.clone()).await?;
+            
+            let mut stats = self.stats.lock();
+            stats.filtered_writes += 1;
+            
+            return Ok(WriteResponse {
+                success: true,
+                request_id: request.request_id,
+                write_timestamp: request.timestamp.unwrap_or(0),
+                latency_ms: start.elapsed().as_secs_f64() * 1000.0,
+                error: None,
+            });
+        }
         
         // Execute both writes in parallel
         let source_future = self.source_conn.execute(&query, request.values.clone());
@@ -274,6 +320,12 @@ impl DualWriter {
         let mut config = self.config.write().await;
         *config = new_config;
         info!("Configuration updated");
+    }
+    
+    // Hot-reload filter config  // <-- Added
+    pub async fn update_filter_config(&self, new_config: FilterConfig) {
+        self.filter_governor.reload_config(&new_config).await;
+        info!("Filter configuration reloaded");
     }
     
     pub fn get_stats(&self) -> WriterStats {

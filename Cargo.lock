@@ -2210,6 +2210,7 @@ dependencies = [
  "scylla",
  "serde",
  "serde_json",
+ "serde_yaml",
  "snap",
  "svckit",
  "thiserror 1.0.69",

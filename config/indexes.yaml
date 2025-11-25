@@ -97,6 +97,6 @@
   column_name: type
   index_type: secondary
 
-# Add remaining 45+ indexes here...
-# NOTE: This is a sample. Full list of 60+ indexes would get extracted
+# Add remaining 45+ indexes ...
+# NOTE: This is a fragment. Full list of 60+ indexes would get extracted
 # from actual Iconik schema assessment document

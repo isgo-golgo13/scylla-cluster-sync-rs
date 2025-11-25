@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{info, warn, error};
 use serde::{Deserialize, Serialize};
+use tokio::time::sleep;
 
 use svckit::{
     errors::SyncError,
@@ -67,17 +68,20 @@ impl IndexStrategy for StandardIndexStrategy {
             
             match self.connection.execute_simple(&drop_query).await {
                 Ok(_) => {
-                    info!("Dropped index: {}.{}", index.keyspace, index.index_name);
+                    info!("✓ Dropped index: {}.{}", index.keyspace, index.index_name);
                     dropped.push(index.index_name.clone());
                 }
                 Err(e) => {
-                    error!("Failed to drop index {}: {}", index.index_name, e);
-                    // Continue with other indexes
+                    warn!("✗ Failed to drop index {}.{}: {}", 
+                        index.keyspace, index.index_name, e);
                 }
             }
+            
+            // Small delay to avoid overwhelming cluster
+            sleep(Duration::from_millis(100)).await;
         }
         
-        info!("Dropped {}/{} indexes successfully", dropped.len(), indexes.len());
+        info!("Successfully dropped {}/{} indexes", dropped.len(), indexes.len());
         Ok(dropped)
     }
     
@@ -85,7 +89,7 @@ impl IndexStrategy for StandardIndexStrategy {
         info!("Rebuilding {} secondary indexes after SSTable load", indexes.len());
         let start = Instant::now();
         
-        for (i, index) in indexes.iter().enumerate() {
+        for index in indexes {
             let create_query = format!(
                 "CREATE INDEX IF NOT EXISTS {} ON {}.{} ({})",
                 index.index_name,
@@ -94,34 +98,33 @@ impl IndexStrategy for StandardIndexStrategy {
                 index.column_name
             );
             
-            info!("Rebuilding index {}/{}: {}", i + 1, indexes.len(), index.index_name);
+            info!("Rebuilding index: {}.{} on column {}", 
+                index.keyspace, index.index_name, index.column_name);
             
             match self.connection.execute_simple(&create_query).await {
                 Ok(_) => {
-                    info!("Rebuilt index: {}.{}", index.keyspace, index.index_name);
+                    info!("✓ Rebuilt index: {}.{}", index.keyspace, index.index_name);
                 }
                 Err(e) => {
-                    error!("Failed to rebuild index {}: {}", index.index_name, e);
-                    return Err(SyncError::MigrationError(
-                        format!("Index rebuild failed: {}", e)
-                    ));
+                    error!("✗ Failed to rebuild index {}.{}: {}", 
+                        index.keyspace, index.index_name, e);
+                    return Err(SyncError::DatabaseError(format!(
+                        "Failed to rebuild index {}: {}", index.index_name, e
+                    )));
                 }
             }
+            
+            // Small delay between index builds
+            sleep(Duration::from_millis(200)).await;
         }
         
-        let duration = start.elapsed();
-        info!(
-            "Index rebuild complete: {} indexes in {:?} ({:.2} sec/index avg)",
-            indexes.len(),
-            duration,
-            duration.as_secs_f64() / indexes.len() as f64
-        );
-        
+        let elapsed = start.elapsed();
+        info!("All {} indexes rebuilt in {:?}", indexes.len(), elapsed);
         Ok(())
     }
     
     async fn verify_indexes(&self, indexes: &[IndexInfo]) -> Result<bool, SyncError> {
-        info!("Verifying {} indexes", indexes.len());
+        info!("Verifying {} indexes exist", indexes.len());
         
         for index in indexes {
             let query = format!(
@@ -131,15 +134,22 @@ impl IndexStrategy for StandardIndexStrategy {
                 index.index_name
             );
             
-            let result = self.connection.execute_simple(&query).await?;
-            
-            if result.rows_num().unwrap_or(0) == 0 {
-                warn!("Index not found: {}.{}", index.keyspace, index.index_name);
-                return Ok(false);
+            match self.connection.execute_simple(&query).await {
+                Ok(rows) => {
+                    if rows.is_empty() {
+                        warn!("✗ Index missing: {}.{}", index.keyspace, index.index_name);
+                        return Ok(false);
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to verify index {}.{}: {}", 
+                        index.keyspace, index.index_name, e);
+                    return Ok(false);
+                }
             }
         }
         
-        info!("All {} indexes verified", indexes.len());
+        info!("✓ All {} indexes verified", indexes.len());
         Ok(true)
     }
     
@@ -148,17 +158,17 @@ impl IndexStrategy for StandardIndexStrategy {
     }
 }
 
-/// Parallel index rebuild strategy - rebuilds indexes concurrently
+/// Parallel index strategy - rebuild indexes in parallel batches
 pub struct ParallelIndexStrategy {
     connection: Arc<ScyllaConnection>,
-    max_concurrent: usize,
+    parallelism: usize,
 }
 
 impl ParallelIndexStrategy {
-    pub fn new(connection: Arc<ScyllaConnection>, max_concurrent: usize) -> Self {
-        Self {
+    pub fn new(connection: Arc<ScyllaConnection>, parallelism: usize) -> Self {
+        Self { 
             connection,
-            max_concurrent,
+            parallelism: parallelism.max(1),
         }
     }
 }
@@ -166,73 +176,118 @@ impl ParallelIndexStrategy {
 #[async_trait]
 impl IndexStrategy for ParallelIndexStrategy {
     async fn drop_indexes(&self, indexes: &[IndexInfo]) -> Result<Vec<String>, SyncError> {
-        // Same as standard strategy
-        let standard = StandardIndexStrategy::new(self.connection.clone());
-        standard.drop_indexes(indexes).await
+        info!("Dropping {} indexes with parallelism={}", indexes.len(), self.parallelism);
+        let mut dropped = Vec::new();
+        
+        for chunk in indexes.chunks(self.parallelism) {
+            let mut tasks = Vec::new();
+            
+            for index in chunk {
+                let conn = self.connection.clone();
+                let index = index.clone();
+                
+                let task = tokio::spawn(async move {
+                    let drop_query = format!(
+                        "DROP INDEX IF EXISTS {}.{}",
+                        index.keyspace,
+                        index.index_name
+                    );
+                    
+                    match conn.execute_simple(&drop_query).await {
+                        Ok(_) => {
+                            info!("✓ Dropped index: {}.{}", index.keyspace, index.index_name);
+                            Ok(index.index_name)
+                        }
+                        Err(e) => {
+                            warn!("✗ Failed to drop index {}.{}: {}", 
+                                index.keyspace, index.index_name, e);
+                            Err(e)
+                        }
+                    }
+                });
+                
+                tasks.push(task);
+            }
+            
+            // Wait for batch to complete
+            for task in tasks {
+                if let Ok(Ok(name)) = task.await {
+                    dropped.push(name);
+                }
+            }
+            
+            // Small delay between batches
+            sleep(Duration::from_millis(500)).await;
+        }
+        
+        info!("Successfully dropped {}/{} indexes", dropped.len(), indexes.len());
+        Ok(dropped)
     }
     
     async fn rebuild_indexes(&self, indexes: &[IndexInfo]) -> Result<(), SyncError> {
-        info!("Rebuilding {} indexes in parallel (max {} concurrent)", 
-              indexes.len(), self.max_concurrent);
-        
+        info!("Rebuilding {} indexes with parallelism={}", indexes.len(), self.parallelism);
         let start = Instant::now();
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(self.max_concurrent));
-        let mut tasks = vec![];
+        let mut failures = Vec::new();
         
-        for index in indexes {
-            let permit = semaphore.clone().acquire_owned().await.unwrap();
-            let connection = self.connection.clone();
-            let index_clone = index.clone();
+        for chunk in indexes.chunks(self.parallelism) {
+            let mut tasks = Vec::new();
             
-            let task = tokio::spawn(async move {
-                let create_query = format!(
-                    "CREATE INDEX IF NOT EXISTS {} ON {}.{} ({})",
-                    index_clone.index_name,
-                    index_clone.keyspace,
-                    index_clone.table,
-                    index_clone.column_name
-                );
+            for index in chunk {
+                let conn = self.connection.clone();
+                let index = index.clone();
                 
-                let result = connection.execute_simple(&create_query).await;
-                drop(permit);
+                let task = tokio::spawn(async move {
+                    let create_query = format!(
+                        "CREATE INDEX IF NOT EXISTS {} ON {}.{} ({})",
+                        index.index_name,
+                        index.keyspace,
+                        index.table,
+                        index.column_name
+                    );
+                    
+                    info!("Rebuilding index: {}.{}", index.keyspace, index.index_name);
+                    
+                    match conn.execute_simple(&create_query).await {
+                        Ok(_) => {
+                            info!("✓ Rebuilt index: {}.{}", index.keyspace, index.index_name);
+                            Ok(())
+                        }
+                        Err(e) => {
+                            error!("✗ Failed to rebuild index {}.{}: {}", 
+                                index.keyspace, index.index_name, e);
+                            Err((index.index_name.clone(), e))
+                        }
+                    }
+                });
                 
-                match result {
-                    Ok(_) => {
-                        info!("Rebuilt index: {}", index_clone.index_name);
-                        Ok(())
-                    }
-                    Err(e) => {
-                        error!("Failed to rebuild index {}: {}", index_clone.index_name, e);
-                        Err(e)
-                    }
-                }
-            });
-            
-            tasks.push(task);
-        }
-        
-        // Wait for all tasks
-        let mut errors = 0;
-        for task in tasks {
-            if let Err(e) = task.await {
-                error!("Index rebuild task failed: {}", e);
-                errors += 1;
+                tasks.push(task);
             }
+            
+            // Wait for batch to complete
+            for task in tasks {
+                if let Ok(Err((name, e))) = task.await {
+                    failures.push((name, e));
+                }
+            }
+            
+            // Small delay between batches
+            sleep(Duration::from_secs(1)).await;
         }
         
-        if errors > 0 {
-            return Err(SyncError::MigrationError(
-                format!("{} index rebuilds failed", errors)
-            ));
+        if !failures.is_empty() {
+            error!("{} indexes failed to rebuild", failures.len());
+            return Err(SyncError::DatabaseError(format!(
+                "Failed to rebuild {} indexes", failures.len()
+            )));
         }
         
-        let duration = start.elapsed();
-        info!("Parallel index rebuild complete: {} indexes in {:?}", indexes.len(), duration);
-        
+        let elapsed = start.elapsed();
+        info!("All {} indexes rebuilt in {:?}", indexes.len(), elapsed);
         Ok(())
     }
     
     async fn verify_indexes(&self, indexes: &[IndexInfo]) -> Result<bool, SyncError> {
+        // Use standard verification (no parallelism needed for reads)
         let standard = StandardIndexStrategy::new(self.connection.clone());
         standard.verify_indexes(indexes).await
     }
@@ -242,7 +297,7 @@ impl IndexStrategy for ParallelIndexStrategy {
     }
 }
 
-/// IndexManager - orchestrates index lifecycle
+/// IndexManager - Orchestrates index lifecycle
 pub struct IndexManager {
     strategy: Box<dyn IndexStrategy>,
     indexes: Vec<IndexInfo>,
@@ -250,43 +305,60 @@ pub struct IndexManager {
 
 impl IndexManager {
     pub fn new(strategy: Box<dyn IndexStrategy>, indexes: Vec<IndexInfo>) -> Self {
-        info!("IndexManager initialized with {} indexes using strategy: {}", 
-              indexes.len(), strategy.name());
+        info!("IndexManager initialized with {} strategy, {} indexes", 
+            strategy.name(), indexes.len());
         Self { strategy, indexes }
     }
     
-    /// Drop all indexes before migration
-    pub async fn drop_all(&self) -> Result<Vec<String>, SyncError> {
-        self.strategy.drop_indexes(&self.indexes).await
-    }
-    
-    /// Rebuild all indexes after migration
-    pub async fn rebuild_all(&self) -> Result<(), SyncError> {
-        self.strategy.rebuild_indexes(&self.indexes).await
-    }
-    
-    /// Verify all indexes exist
-    pub async fn verify_all(&self) -> Result<bool, SyncError> {
-        self.strategy.verify_indexes(&self.indexes).await
-    }
-    
-    /// Get index count
     pub fn index_count(&self) -> usize {
         self.indexes.len()
     }
+    
+    pub async fn drop_all(&self) -> Result<Vec<String>, SyncError> {
+        info!("Dropping all {} indexes", self.indexes.len());
+        self.strategy.drop_indexes(&self.indexes).await
+    }
+    
+    pub async fn rebuild_all(&self) -> Result<(), SyncError> {
+        info!("Rebuilding all {} indexes", self.indexes.len());
+        self.strategy.rebuild_indexes(&self.indexes).await
+    }
+    
+    pub async fn verify_all(&self) -> Result<bool, SyncError> {
+        info!("Verifying all {} indexes", self.indexes.len());
+        self.strategy.verify_indexes(&self.indexes).await
+    }
+    
+    pub async fn drop_keyspace(&self, keyspace: &str) -> Result<Vec<String>, SyncError> {
+        let indexes: Vec<_> = self.indexes.iter()
+            .filter(|idx| idx.keyspace == keyspace)
+            .cloned()
+            .collect();
+        
+        info!("Dropping {} indexes in keyspace {}", indexes.len(), keyspace);
+        self.strategy.drop_indexes(&indexes).await
+    }
+    
+    pub async fn rebuild_keyspace(&self, keyspace: &str) -> Result<(), SyncError> {
+        let indexes: Vec<_> = self.indexes.iter()
+            .filter(|idx| idx.keyspace == keyspace)
+            .cloned()
+            .collect();
+        
+        info!("Rebuilding {} indexes in keyspace {}", indexes.len(), keyspace);
+        self.strategy.rebuild_indexes(&indexes).await
+    }
 }
 
-/// Load indexes from configuration
-pub fn load_indexes_from_config(config_path: &str) -> Result<Vec<IndexInfo>, SyncError> {
-    use std::fs;
-    
-    let contents = fs::read_to_string(config_path)
+/// Load index configuration from YAML file
+pub fn load_indexes_from_config(path: &str) -> Result<Vec<IndexInfo>, SyncError> {
+    let content = std::fs::read_to_string(path)
         .map_err(|e| SyncError::ConfigError(format!("Failed to read index config: {}", e)))?;
     
-    let indexes: Vec<IndexInfo> = serde_yaml::from_str(&contents)
+    let indexes: Vec<IndexInfo> = serde_yaml::from_str(&content)
         .map_err(|e| SyncError::ConfigError(format!("Failed to parse index config: {}", e)))?;
     
-    info!("Loaded {} indexes from config: {}", indexes.len(), config_path);
+    info!("Loaded {} indexes from {}", indexes.len(), path);
     Ok(indexes)
 }
 
@@ -297,15 +369,37 @@ mod tests {
     #[test]
     fn test_index_info_serialization() {
         let index = IndexInfo {
-            keyspace: "files_keyspace".to_string(),
-            table: "files".to_string(),
-            index_name: "files_by_asset_id".to_string(),
-            column_name: "asset_id".to_string(),
+            keyspace: "test_ks".to_string(),
+            table: "test_table".to_string(),
+            index_name: "test_idx".to_string(),
+            column_name: "test_col".to_string(),
             index_type: IndexType::Secondary,
         };
         
         let yaml = serde_yaml::to_string(&index).unwrap();
-        assert!(yaml.contains("files_keyspace"));
-        assert!(yaml.contains("asset_id"));
+        assert!(yaml.contains("test_ks"));
+        assert!(yaml.contains("test_idx"));
+    }
+    
+    #[test]
+    fn test_load_indexes_from_yaml() {
+        let yaml = r#"
+- keyspace: files_keyspace
+  table: files
+  index_name: files_by_asset_id
+  column_name: asset_id
+  index_type: secondary
+
+- keyspace: assets_keyspace
+  table: assets
+  index_name: assets_by_status
+  column_name: status
+  index_type: secondary
+"#;
+        
+        let indexes: Vec<IndexInfo> = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(indexes.len(), 2);
+        assert_eq!(indexes[0].keyspace, "files_keyspace");
+        assert_eq!(indexes[1].table, "assets");
     }
 }

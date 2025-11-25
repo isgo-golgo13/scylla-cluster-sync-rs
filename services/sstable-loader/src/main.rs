@@ -1,23 +1,50 @@
+// services/sstable-loader/src/main.rs
+//
+// SSTable-Loader - High-performance bulk data migration service
+// With IndexManager integration for 60+ secondary indexes
+//
+
 mod loader;
 mod config;
 mod api;
 mod token_range;
+mod index_manager;
 
 use anyhow::Result;
 use clap::Parser;
 use std::sync::Arc;
-use tracing::info;
+use tracing::{info, warn, error};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+use index_manager::{IndexManager, ParallelIndexStrategy, load_indexes_from_config};
 
 #[derive(Parser, Debug)]
 #[command(name = "sstable-loader")]
 #[command(about = "High-performance SSTable bulk loader for ScyllaDB cluster migration")]
 struct Args {
+    /// Path to main configuration file
     #[arg(short, long, default_value = "config/sstable-loader.yaml")]
     config: String,
     
+    /// Path to secondary indexes configuration
+    #[arg(short, long, default_value = "config/indexes.yaml")]
+    indexes: String,
+    
+    /// API server port
     #[arg(short, long, default_value = "8081")]
     port: u16,
+    
+    /// Skip index management (for testing or manual control)
+    #[arg(long, default_value = "false")]
+    skip_indexes: bool,
+    
+    /// Number of parallel index operations
+    #[arg(long, default_value = "4")]
+    index_parallelism: usize,
+    
+    /// Auto-start migration on boot (otherwise wait for API trigger)
+    #[arg(long, default_value = "false")]
+    auto_start: bool,
 }
 
 #[tokio::main]
@@ -33,6 +60,9 @@ async fn main() -> Result<()> {
     
     let args = Args::parse();
     info!("Starting SSTable-Loader service on port {}", args.port);
+    info!("Configuration: {}", args.config);
+    info!("Index config: {}", args.indexes);
+    info!("Skip indexes: {}", args.skip_indexes);
     
     // Load configuration
     let config = config::load_config(&args.config)?;
@@ -40,10 +70,98 @@ async fn main() -> Result<()> {
     // Initialize loader
     let loader = Arc::new(loader::SSTableLoader::new(config.clone()).await?);
     
+    // Initialize IndexManager (if not skipped)
+    let index_manager: Option<Arc<IndexManager>> = if !args.skip_indexes {
+        match load_indexes_from_config(&args.indexes) {
+            Ok(indexes) => {
+                info!("Loaded {} indexes from configuration", indexes.len());
+                
+                // Create parallel index strategy
+                let strategy = Box::new(ParallelIndexStrategy::new(
+                    loader.get_target_connection(),
+                    args.index_parallelism,
+                ));
+                
+                Some(Arc::new(IndexManager::new(strategy, indexes)))
+            }
+            Err(e) => {
+                warn!("Failed to load index config: {}. Proceeding without index management.", e);
+                None
+            }
+        }
+    } else {
+        info!("Index management disabled (--skip-indexes flag)");
+        None
+    };
+    
+    // Log index manager status
+    if let Some(ref idx_mgr) = index_manager {
+        info!(
+            "IndexManager ready: {} indexes configured, parallelism={}",
+            idx_mgr.index_count(),
+            args.index_parallelism
+        );
+    }
+    
     info!("SSTable-Loader initialized and ready");
     
-    // Start API server
-    api::start_server(loader, args.port).await?;
+    // Auto-start migration if requested
+    if args.auto_start {
+        info!("Auto-start enabled - beginning migration sequence");
+        
+        // Phase 1: Drop indexes
+        if let Some(ref idx_mgr) = index_manager {
+            info!("Phase 1: Dropping {} indexes before data load...", idx_mgr.index_count());
+            match idx_mgr.drop_all().await {
+                Ok(dropped) => {
+                    info!("Successfully dropped {} indexes", dropped.len());
+                }
+                Err(e) => {
+                    error!("Failed to drop indexes: {}. Migration aborted.", e);
+                    return Err(e.into());
+                }
+            }
+        }
+        
+        // Phase 2: Run migration
+        info!("Phase 2: Starting SSTable migration...");
+        match loader.start_migration(None).await {
+            Ok(stats) => {
+                info!("Migration completed: {:?}", stats);
+            }
+            Err(e) => {
+                error!("Migration failed: {}. Index rebuild skipped.", e);
+                return Err(e.into());
+            }
+        }
+        
+        // Phase 3: Rebuild indexes
+        if let Some(ref idx_mgr) = index_manager {
+            info!("Phase 3: Rebuilding {} indexes after data load...", idx_mgr.index_count());
+            match idx_mgr.rebuild_all().await {
+                Ok(_) => {
+                    info!("All indexes rebuilt successfully");
+                }
+                Err(e) => {
+                    error!("Failed to rebuild indexes: {}", e);
+                    return Err(e.into());
+                }
+            }
+            
+            // Verify indexes
+            info!("Phase 4: Verifying indexes...");
+            match idx_mgr.verify_all().await {
+                Ok(true) => info!("All indexes verified successfully"),
+                Ok(false) => warn!("Some indexes failed verification - manual check required"),
+                Err(e) => error!("Index verification failed: {}", e),
+            }
+        }
+        
+        info!("Migration sequence completed successfully");
+    }
+    
+    // Start API server (handles manual migration triggers)
+    api::start_server(loader, index_manager, args.port).await?;
     
     Ok(())
 }

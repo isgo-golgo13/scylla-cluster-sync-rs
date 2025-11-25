@@ -1,154 +1,382 @@
-use std::sync::Arc;
+// services/sstable-loader/src/api.rs
+//
+// REST API for SSTable-Loader with IndexManager integration
+//
+
 use axum::{
     extract::State,
-    http::StatusCode,
-    response::{IntoResponse, Json},
     routing::{get, post},
-    Router,
+    Json, Router,
 };
-use prometheus::{Encoder, TextEncoder};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
-use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
-use tracing::info;
+use std::sync::Arc;
+use tracing::{info, error};
 
 use crate::loader::SSTableLoader;
+use crate::index_manager::IndexManager;
 
-pub async fn start_server(loader: Arc<SSTableLoader>, port: u16) -> anyhow::Result<()> {
+/// Shared application state
+#[derive(Clone)]
+pub struct AppState {
+    pub loader: Arc<SSTableLoader>,
+    pub index_manager: Option<Arc<IndexManager>>,
+}
+
+/// Health check response
+#[derive(Serialize)]
+struct HealthResponse {
+    status: String,
+    service: String,
+    index_manager_enabled: bool,
+    index_count: usize,
+}
+
+/// Migration start request
+#[derive(Deserialize)]
+struct MigrationRequest {
+    #[serde(default)]
+    keyspace_filter: Option<Vec<String>>,
+    #[serde(default)]
+    drop_indexes_first: bool,
+    #[serde(default)]
+    rebuild_indexes_after: bool,
+}
+
+/// Migration response
+#[derive(Serialize)]
+struct MigrationResponse {
+    status: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stats: Option<serde_json::Value>,
+}
+
+/// Index operation response
+#[derive(Serialize)]
+struct IndexResponse {
+    status: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    indexes_affected: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<Vec<String>>,
+}
+
+pub async fn start_server(
+    loader: Arc<SSTableLoader>,
+    index_manager: Option<Arc<IndexManager>>,
+    port: u16,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let state = AppState {
+        loader,
+        index_manager,
+    };
+    
     let app = Router::new()
-        .route("/start", post(handle_start))
-        .route("/pause", post(handle_pause))
-        .route("/resume", post(handle_resume))
-        .route("/stop", post(handle_stop))
-        .route("/progress", get(handle_progress))
-        .route("/status", get(handle_status))
-        .route("/health", get(handle_health))
-        .route("/metrics", get(handle_metrics))
-        .layer(TraceLayer::new_for_http())
-        .layer(CompressionLayer::new())
-        .layer(CorsLayer::permissive())
-        .with_state(loader);
+        // Health & Status
+        .route("/health", get(health_check))
+        .route("/status", get(migration_status))
+        
+        // Migration endpoints
+        .route("/start", post(start_migration))
+        .route("/stop", post(stop_migration))
+        
+        // Index management endpoints
+        .route("/indexes/drop", post(drop_indexes))
+        .route("/indexes/rebuild", post(rebuild_indexes))
+        .route("/indexes/verify", get(verify_indexes))
+        .route("/indexes/status", get(index_status))
+        
+        // Keyspace-specific index operations
+        .route("/indexes/drop/:keyspace", post(drop_keyspace_indexes))
+        .route("/indexes/rebuild/:keyspace", post(rebuild_keyspace_indexes))
+        
+        .with_state(state);
     
     let addr = format!("0.0.0.0:{}", port);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    info!("SSTable-Loader API server listening on {}", addr);
+    info!("SSTable-Loader API listening on {}", addr);
     
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
+    
     Ok(())
 }
 
-#[derive(Deserialize)]
-struct StartRequest {
-    tables: Option<Vec<String>>,
+/// GET /health - Health check
+async fn health_check(State(state): State<AppState>) -> Json<HealthResponse> {
+    let (enabled, count) = match &state.index_manager {
+        Some(mgr) => (true, mgr.index_count()),
+        None => (false, 0),
+    };
+    
+    Json(HealthResponse {
+        status: "healthy".to_string(),
+        service: "sstable-loader".to_string(),
+        index_manager_enabled: enabled,
+        index_count: count,
+    })
 }
 
-async fn handle_start(
-    State(loader): State<Arc<SSTableLoader>>,
-    Json(request): Json<StartRequest>,
-) -> impl IntoResponse {
-    if loader.is_running() {
-        return (StatusCode::CONFLICT, Json(json!({
-            "success": false,
-            "error": "Migration already running",
-        }))).into_response();
+/// GET /status - Migration status
+async fn migration_status(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let stats = state.loader.get_stats();
+    Json(serde_json::json!({
+        "status": "ok",
+        "migration": stats,
+        "index_manager": state.index_manager.as_ref().map(|m| {
+            serde_json::json!({
+                "enabled": true,
+                "index_count": m.index_count()
+            })
+        })
+    }))
+}
+
+/// POST /start - Start migration
+async fn start_migration(
+    State(state): State<AppState>,
+    Json(request): Json<MigrationRequest>,
+) -> Json<MigrationResponse> {
+    info!("Migration start requested");
+    
+    // Phase 1: Drop indexes if requested
+    if request.drop_indexes_first {
+        if let Some(ref idx_mgr) = state.index_manager {
+            info!("Dropping indexes before migration...");
+            if let Err(e) = idx_mgr.drop_all().await {
+                return Json(MigrationResponse {
+                    status: "error".to_string(),
+                    message: format!("Failed to drop indexes: {}", e),
+                    stats: None,
+                });
+            }
+            info!("Indexes dropped successfully");
+        }
     }
     
-    let loader_clone = loader.clone();
-    let tables = request.tables.clone();
-    
-    tokio::spawn(async move {
-        if let Err(e) = loader_clone.start_migration(tables).await {
-            tracing::error!("Migration failed: {}", e);
+    // Phase 2: Run migration
+    match state.loader.start_migration(request.keyspace_filter).await {
+        Ok(stats) => {
+            info!("Migration completed successfully");
+            
+            // Phase 3: Rebuild indexes if requested
+            if request.rebuild_indexes_after {
+                if let Some(ref idx_mgr) = state.index_manager {
+                    info!("Rebuilding indexes after migration...");
+                    if let Err(e) = idx_mgr.rebuild_all().await {
+                        return Json(MigrationResponse {
+                            status: "partial".to_string(),
+                            message: format!("Migration succeeded but index rebuild failed: {}", e),
+                            stats: Some(serde_json::to_value(stats).unwrap_or_default()),
+                        });
+                    }
+                    info!("Indexes rebuilt successfully");
+                }
+            }
+            
+            Json(MigrationResponse {
+                status: "success".to_string(),
+                message: "Migration completed".to_string(),
+                stats: Some(serde_json::to_value(stats).unwrap_or_default()),
+            })
         }
-    });
-    
-    (StatusCode::OK, Json(json!({
-        "success": true,
-        "message": "Migration started",
-    }))).into_response()
+        Err(e) => {
+            error!("Migration failed: {}", e);
+            Json(MigrationResponse {
+                status: "error".to_string(),
+                message: format!("Migration failed: {}", e),
+                stats: None,
+            })
+        }
+    }
 }
 
-async fn handle_pause(
-    State(loader): State<Arc<SSTableLoader>>,
-) -> impl IntoResponse {
-    loader.pause();
-    Json(json!({
-        "success": true,
-        "message": "Migration paused",
-    }))
+/// POST /stop - Stop migration
+async fn stop_migration(State(state): State<AppState>) -> Json<MigrationResponse> {
+    match state.loader.stop_migration().await {
+        Ok(_) => Json(MigrationResponse {
+            status: "success".to_string(),
+            message: "Migration stopped".to_string(),
+            stats: None,
+        }),
+        Err(e) => Json(MigrationResponse {
+            status: "error".to_string(),
+            message: format!("Failed to stop migration: {}", e),
+            stats: None,
+        }),
+    }
 }
 
-async fn handle_resume(
-    State(loader): State<Arc<SSTableLoader>>,
-) -> impl IntoResponse {
-    loader.resume();
-    Json(json!({
-        "success": true,
-        "message": "Migration resumed",
-    }))
+/// POST /indexes/drop - Drop all indexes
+async fn drop_indexes(State(state): State<AppState>) -> Json<IndexResponse> {
+    match &state.index_manager {
+        Some(idx_mgr) => {
+            info!("Dropping all {} indexes", idx_mgr.index_count());
+            match idx_mgr.drop_all().await {
+                Ok(dropped) => Json(IndexResponse {
+                    status: "success".to_string(),
+                    message: format!("Dropped {} indexes", dropped.len()),
+                    indexes_affected: Some(dropped.len()),
+                    details: Some(dropped),
+                }),
+                Err(e) => Json(IndexResponse {
+                    status: "error".to_string(),
+                    message: format!("Failed to drop indexes: {}", e),
+                    indexes_affected: None,
+                    details: None,
+                }),
+            }
+        }
+        None => Json(IndexResponse {
+            status: "skipped".to_string(),
+            message: "Index management is disabled".to_string(),
+            indexes_affected: None,
+            details: None,
+        }),
+    }
 }
 
-async fn handle_stop(
-    State(loader): State<Arc<SSTableLoader>>,
-) -> impl IntoResponse {
-    loader.stop();
-    Json(json!({
-        "success": true,
-        "message": "Migration stopped",
-    }))
+/// POST /indexes/rebuild - Rebuild all indexes
+async fn rebuild_indexes(State(state): State<AppState>) -> Json<IndexResponse> {
+    match &state.index_manager {
+        Some(idx_mgr) => {
+            let count = idx_mgr.index_count();
+            info!("Rebuilding all {} indexes", count);
+            match idx_mgr.rebuild_all().await {
+                Ok(_) => Json(IndexResponse {
+                    status: "success".to_string(),
+                    message: format!("Rebuilt {} indexes", count),
+                    indexes_affected: Some(count),
+                    details: None,
+                }),
+                Err(e) => Json(IndexResponse {
+                    status: "error".to_string(),
+                    message: format!("Failed to rebuild indexes: {}", e),
+                    indexes_affected: None,
+                    details: None,
+                }),
+            }
+        }
+        None => Json(IndexResponse {
+            status: "skipped".to_string(),
+            message: "Index management is disabled".to_string(),
+            indexes_affected: None,
+            details: None,
+        }),
+    }
 }
 
-async fn handle_progress(
-    State(loader): State<Arc<SSTableLoader>>,
-) -> impl IntoResponse {
-    let (total, migrated, failed, progress, throughput) = loader.get_stats();
-    
-    Json(json!({
-        "total_rows": total,
-        "migrated_rows": migrated,
-        "failed_rows": failed,
-        "progress_percent": progress,
-        "throughput_rows_per_sec": throughput,
-        "is_running": loader.is_running(),
-        "is_paused": loader.is_paused(),
-    }))
+/// GET /indexes/verify - Verify all indexes exist
+async fn verify_indexes(State(state): State<AppState>) -> Json<IndexResponse> {
+    match &state.index_manager {
+        Some(idx_mgr) => {
+            info!("Verifying {} indexes", idx_mgr.index_count());
+            match idx_mgr.verify_all().await {
+                Ok(true) => Json(IndexResponse {
+                    status: "success".to_string(),
+                    message: "All indexes verified".to_string(),
+                    indexes_affected: Some(idx_mgr.index_count()),
+                    details: None,
+                }),
+                Ok(false) => Json(IndexResponse {
+                    status: "warning".to_string(),
+                    message: "Some indexes are missing".to_string(),
+                    indexes_affected: None,
+                    details: None,
+                }),
+                Err(e) => Json(IndexResponse {
+                    status: "error".to_string(),
+                    message: format!("Verification failed: {}", e),
+                    indexes_affected: None,
+                    details: None,
+                }),
+            }
+        }
+        None => Json(IndexResponse {
+            status: "skipped".to_string(),
+            message: "Index management is disabled".to_string(),
+            indexes_affected: None,
+            details: None,
+        }),
+    }
 }
 
-async fn handle_status(
-    State(loader): State<Arc<SSTableLoader>>,
-) -> impl IntoResponse {
-    let (total, migrated, failed, progress, throughput) = loader.get_stats();
-    
-    Json(json!({
-        "service": "sstable-loader",
-        "status": if loader.is_running() {
-            if loader.is_paused() { "paused" } else { "running" }
-        } else {
-            "stopped"
-        },
-        "stats": {
-            "total_rows": total,
-            "migrated_rows": migrated,
-            "failed_rows": failed,
-            "progress_percent": progress,
-            "throughput_rows_per_sec": throughput,
-        },
-        "timestamp": chrono::Utc::now(),
-    }))
+/// GET /indexes/status - Get index manager status
+async fn index_status(State(state): State<AppState>) -> Json<serde_json::Value> {
+    match &state.index_manager {
+        Some(idx_mgr) => Json(serde_json::json!({
+            "enabled": true,
+            "index_count": idx_mgr.index_count(),
+            "status": "ready"
+        })),
+        None => Json(serde_json::json!({
+            "enabled": false,
+            "index_count": 0,
+            "status": "disabled"
+        })),
+    }
 }
 
-async fn handle_health() -> impl IntoResponse {
-    Json(json!({
-        "status": "healthy",
-        "service": "sstable-loader",
-        "timestamp": chrono::Utc::now(),
-    }))
+/// POST /indexes/drop/:keyspace - Drop indexes for specific keyspace
+async fn drop_keyspace_indexes(
+    State(state): State<AppState>,
+    axum::extract::Path(keyspace): axum::extract::Path<String>,
+) -> Json<IndexResponse> {
+    match &state.index_manager {
+        Some(idx_mgr) => {
+            info!("Dropping indexes for keyspace: {}", keyspace);
+            match idx_mgr.drop_keyspace(&keyspace).await {
+                Ok(dropped) => Json(IndexResponse {
+                    status: "success".to_string(),
+                    message: format!("Dropped {} indexes in keyspace {}", dropped.len(), keyspace),
+                    indexes_affected: Some(dropped.len()),
+                    details: Some(dropped),
+                }),
+                Err(e) => Json(IndexResponse {
+                    status: "error".to_string(),
+                    message: format!("Failed to drop indexes: {}", e),
+                    indexes_affected: None,
+                    details: None,
+                }),
+            }
+        }
+        None => Json(IndexResponse {
+            status: "skipped".to_string(),
+            message: "Index management is disabled".to_string(),
+            indexes_affected: None,
+            details: None,
+        }),
+    }
 }
 
-async fn handle_metrics() -> impl IntoResponse {
-    let encoder = TextEncoder::new();
-    let metric_families = prometheus::gather();
-    let mut buffer = Vec::new();
-    encoder.encode(&metric_families, &mut buffer).unwrap();
-    String::from_utf8(buffer).unwrap()
+/// POST /indexes/rebuild/:keyspace - Rebuild indexes for specific keyspace
+async fn rebuild_keyspace_indexes(
+    State(state): State<AppState>,
+    axum::extract::Path(keyspace): axum::extract::Path<String>,
+) -> Json<IndexResponse> {
+    match &state.index_manager {
+        Some(idx_mgr) => {
+            info!("Rebuilding indexes for keyspace: {}", keyspace);
+            match idx_mgr.rebuild_keyspace(&keyspace).await {
+                Ok(_) => Json(IndexResponse {
+                    status: "success".to_string(),
+                    message: format!("Rebuilt indexes in keyspace {}", keyspace),
+                    indexes_affected: None,
+                    details: None,
+                }),
+                Err(e) => Json(IndexResponse {
+                    status: "error".to_string(),
+                    message: format!("Failed to rebuild indexes: {}", e),
+                    indexes_affected: None,
+                    details: None,
+                }),
+            }
+        }
+        None => Json(IndexResponse {
+            status: "skipped".to_string(),
+            message: "Index management is disabled".to_string(),
+            indexes_affected: None,
+            details: None,
+        }),
+    }
 }
