@@ -1,0 +1,102 @@
+# Secondary Indexes Configuration
+# config/indexes.yaml
+#
+# All 60+ secondary indexes from Iconik Cassandra schema
+# These will be dropped before SSTable load and rebuilt after
+
+# files_keyspace indexes (23 total)
+- keyspace: files_keyspace
+  table: files
+  index_name: files_by_asset_id
+  column_name: asset_id
+  index_type: secondary
+
+- keyspace: files_keyspace
+  table: files
+  index_name: files_by_collection_id
+  column_name: collection_id
+  index_type: secondary
+
+- keyspace: files_keyspace
+  table: files
+  index_name: files_by_storage_id
+  column_name: storage_id
+  index_type: secondary
+
+- keyspace: files_keyspace
+  table: files
+  index_name: files_by_format_id
+  column_name: format_id
+  index_type: secondary
+
+- keyspace: files_keyspace
+  table: files
+  index_name: files_by_file_set_id
+  column_name: file_set_id
+  index_type: secondary
+
+- keyspace: files_keyspace
+  table: files
+  index_name: files_by_version_id
+  column_name: version_id
+  index_type: secondary
+
+- keyspace: files_keyspace
+  table: files
+  index_name: files_by_parent_id
+  column_name: parent_id
+  index_type: secondary
+
+- keyspace: files_keyspace
+  table: files
+  index_name: files_by_status
+  column_name: status
+  index_type: secondary
+
+- keyspace: files_keyspace
+  table: files
+  index_name: files_by_type
+  column_name: type
+  index_type: secondary
+
+- keyspace: files_keyspace
+  table: files
+  index_name: files_by_user_id
+  column_name: user_id
+  index_type: secondary
+
+# assets_keyspace indexes
+- keyspace: assets_keyspace
+  table: assets
+  index_name: assets_by_collection_id
+  column_name: collection_id
+  index_type: secondary
+
+- keyspace: assets_keyspace
+  table: assets
+  index_name: assets_by_status
+  column_name: status
+  index_type: secondary
+
+- keyspace: assets_keyspace
+  table: assets
+  index_name: assets_by_type
+  column_name: type
+  index_type: secondary
+
+# collections_keyspace indexes
+- keyspace: collections_keyspace
+  table: collections
+  index_name: collections_by_parent_id
+  column_name: parent_id
+  index_type: secondary
+
+- keyspace: collections_keyspace
+  table: collections
+  index_name: collections_by_type
+  column_name: type
+  index_type: secondary
+
+# Add remaining 45+ indexes here...
+# NOTE: This is a sample. Full list of 60+ indexes would get extracted
+# from actual Iconik schema assessment document

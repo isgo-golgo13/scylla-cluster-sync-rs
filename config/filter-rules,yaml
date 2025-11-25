@@ -1,0 +1,31 @@
+# Filter Rules Configuration
+# config/filter-rules.yaml
+#
+# Tenant blacklist: system_domain_id UUIDs to exclude from AWS migration
+# Table blacklist: keyspace.table patterns to exclude
+
+filters:
+  # Tenant blacklist (customer UUIDs that must stay on GCP)
+  tenant_blacklist:
+    - "e19206ba-c584-11e8-882a-0a580a30028e"  # Ex: GCP-only customer
+    - "1297c8b6-3563-11e7-adf1-6c4008b85488"  # Ex: Has GCS integration
+  
+  # Table blacklist (keyspace.table to exclude)
+  table_blacklist:
+    # Stats keyspace exclusions
+    - "stats_keyspace.user_audit"
+    - "stats_keyspace.user_audit_partitioned"
+    
+    # Counter table (no longer in production)
+    - "jobs_keyspace.job_progress_model"
+    
+    # Wildcard patterns (applies to all keyspaces)
+    - "*.migrations"           # Exclude migrations table in all keyspaces
+    - "*.celery_task_info"     # Exclude celery task info in all keyspaces
+    
+    # Assets keyspace exclusions
+    - "assets_keyspace.cursors"
+  
+  # Hot-reload interval (seconds)
+  # Config will be reloaded every N seconds without service restart
+  reload_interval_secs: 60
