@@ -1270,11 +1270,14 @@ It is advised that this service location execute on the target side of the trans
 
 
 
-The following architectural workflow graphic shows the entire fleet of the `scylla/cassandra-cluster-sync` application of the dual-writer proxy service, sstable-loader service and dual-writer service (or the data checksumming processor).
+The following architectural workflow graphic shows the entire fleet of the `scylla/cassandra-cluster-sync` application of the dual-writer proxy service, sstable-loader service and dual-writer service (dual-cluster checksumming validation). This version of the entire architectural workflow shows a **Kubernetes-Native** deployment.
 
 ![entire-scylla-cluster-sync-workflow](docs/Full-Service-Architecture.png)
 
 
+The following architectural workflow graphic shows the entire fleet of the `scylla/cassandra-cluster-sync` application of the dual-writer proxy service, sstable-loader service and dual-writer service. This version of the entire architectural workflow shows a **Cloud-Native** VM deployment (services a Docker containers on GCP Compute Instance VMs and AWS EC2 VMs).
+
+![entire-scylla-cluster-sync-workflow-vm-native](docs/Full-Service-Architecture-VM-Native.png)
 
 
 ## Cassandra DB vs ScyllaDB Kubernetes Operator Cost Reduction
