@@ -1272,7 +1272,7 @@ It is advised that this service location execute on the target side of the trans
 
 The following architectural workflow graphic shows the entire fleet of the `scylla/cassandra-cluster-sync` application of the dual-writer proxy service, sstable-loader service and dual-writer service (or the data checksumming processor).
 
-![entire-scylla-cluster-sync-workflow]
+![entire-scylla-cluster-sync-workflow](docs/Full-Service-Architecture.png)
 
 
 
