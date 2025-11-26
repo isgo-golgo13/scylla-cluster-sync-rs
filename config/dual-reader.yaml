@@ -1,7 +1,9 @@
 # Dual-Reader Configuration
 # Data Consistency Validation Service
+# config/dual-reader.yaml (FIXED)
 
 source:
+  driver: "scylla"
   hosts:
     - "scylla-source-1.gcp.example.com"
     - "scylla-source-2.gcp.example.com"
@@ -10,11 +12,12 @@ source:
   keyspace: "production_keyspace"
   username: null
   password: null
-  connection_timeout: 5s
-  request_timeout: 10s
+  connection_timeout_ms: 5000    # FIXED: was connection_timeout: 5s
+  request_timeout_ms: 10000      # FIXED: was request_timeout: 10s
   pool_size: 4
 
 target:
+  driver: "scylla"
   hosts:
     - "scylla-target-1.aws.example.com"
     - "scylla-target-2.aws.example.com"
@@ -23,8 +26,8 @@ target:
   keyspace: "production_keyspace"
   username: null
   password: null
-  connection_timeout: 5s
-  request_timeout: 10s
+  connection_timeout_ms: 5000
+  request_timeout_ms: 10000
   pool_size: 4
 
 reader:
@@ -45,6 +48,7 @@ reader:
   # Discrepancy handling
   max_discrepancies_to_report: 100
   auto_reconcile: false  # If true, automatically fix discrepancies
+  reconciliation_mode: source_wins  # source_wins | newest_wins | manual
 
 observability:
   metrics_port: 9091

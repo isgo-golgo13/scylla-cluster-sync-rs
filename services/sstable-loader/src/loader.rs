@@ -123,8 +123,9 @@ impl SSTableLoader {
     /// Create new SSTableLoader with connections to source (GCP) and target (AWS) clusters
     pub async fn new(config: SSTableLoaderConfig) -> Result<Self, SyncError> {
         info!("Initializing SSTableLoader...");
-        info!("Source cluster: {:?}", config.source.contact_points);
-        info!("Target cluster: {:?}", config.target.contact_points);
+        // FIXED: Use 'hosts' instead of 'contact_points'
+        info!("Source cluster: {:?}", config.source.hosts);
+        info!("Target cluster: {:?}", config.target.hosts);
         
         let source_conn = Arc::new(ScyllaConnection::new(&config.source).await?);
         let target_conn = Arc::new(ScyllaConnection::new(&config.target).await?);

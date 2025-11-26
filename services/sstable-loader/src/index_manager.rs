@@ -135,8 +135,10 @@ impl IndexStrategy for StandardIndexStrategy {
             );
             
             match self.connection.execute_simple(&query).await {
-                Ok(rows) => {
-                    if rows.is_empty() {
+                Ok(result) => {
+                    // FIXED: Use rows_num() instead of is_empty()
+                    let row_count = result.rows_num().unwrap_or(0);
+                    if row_count == 0 {
                         warn!("✗ Index missing: {}.{}", index.keyspace, index.index_name);
                         return Ok(false);
                     }

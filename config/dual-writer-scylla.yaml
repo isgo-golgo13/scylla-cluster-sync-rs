@@ -1,5 +1,5 @@
 # Dual-Writer Configuration - ScyllaDB to ScyllaDB
-# config/dual-writer.yaml
+# config/dual-writer-scylla.yaml (FIXED)
 
 source:
   driver: "scylla"
@@ -11,8 +11,8 @@ source:
   keyspace: "production"
   username: "scylla_user"
   password: "secure_password"
-  connection_timeout_secs: 5
-  request_timeout_secs: 10
+  connection_timeout_ms: 5000    # FIXED: was connection_timeout_secs
+  request_timeout_ms: 10000      # FIXED: was request_timeout_secs
   pool_size: 4
 
 target:
@@ -25,8 +25,8 @@ target:
   keyspace: "production"
   username: "scylla_user"
   password: "secure_password"
-  connection_timeout_secs: 5
-  request_timeout_secs: 10
+  connection_timeout_ms: 5000
+  request_timeout_ms: 10000
   pool_size: 4
 
 writer:

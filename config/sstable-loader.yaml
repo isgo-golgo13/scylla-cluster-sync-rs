@@ -1,7 +1,9 @@
 # SSTable-Loader Configuration
 # High-Performance Bulk Data Migration Service
+# config/sstable-loader.yaml (FIXED)
 
 source:
+  driver: "scylla"
   hosts:
     - "scylla-source-1.gcp.example.com"
     - "scylla-source-2.gcp.example.com"
@@ -10,11 +12,12 @@ source:
   keyspace: "production_keyspace"
   username: null
   password: null
-  connection_timeout: 5s
-  request_timeout: 30s  # Longer timeout for bulk operations
+  connection_timeout_ms: 5000    # FIXED: was connection_timeout: 5s
+  request_timeout_ms: 30000      # FIXED: was request_timeout: 30s (longer for bulk ops)
   pool_size: 8
 
 target:
+  driver: "scylla"
   hosts:
     - "scylla-target-1.aws.example.com"
     - "scylla-target-2.aws.example.com"
@@ -23,8 +26,8 @@ target:
   keyspace: "production_keyspace"
   username: null
   password: null
-  connection_timeout: 5s
-  request_timeout: 30s
+  connection_timeout_ms: 5000
+  request_timeout_ms: 30000
   pool_size: 8
 
 loader:
