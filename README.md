@@ -784,6 +784,7 @@ from typing import Dict, Optional, Any, List
 import aiohttp
 import logging
 from datetime import datetime
+import uuid
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -792,22 +793,81 @@ logger = logging.getLogger(__name__)
 
 class WriteMode(Enum):
     """Migration phases - matches Rust enum exactly"""
-    PRIMARY_ONLY = "PrimaryOnly"          # Phase 0: Cassandra only
-    DUAL_WRITE_ASYNC = "DualWriteAsync"   # Phase 1: Shadow writes
-    DUAL_WRITE_SYNC = "DualWriteSync"     # Phase 2: Synchronous dual writes
-    SHADOW_PRIMARY = "ShadowPrimary"      # Phase 3: ScyllaDB primary
-    TARGET_ONLY = "TargetOnly"            # Phase 4: ScyllaDB only
+    SOURCE_ONLY = "SourceOnly"      # Phase 0: Source (GCP/Cassandra) only
+    DUAL_ASYNC = "DualAsync"        # Phase 1: Shadow writes (async to target)
+    DUAL_SYNC = "DualSync"          # Phase 2: Synchronous dual writes
+    TARGET_ONLY = "TargetOnly"      # Phase 3: Target (AWS/ScyllaDB) only
+
+
+class ConsistencyLevel(Enum):
+    """CQL consistency levels - matches Rust enum"""
+    ANY = "Any"
+    ONE = "One"
+    TWO = "Two"
+    THREE = "Three"
+    QUORUM = "Quorum"
+    ALL = "All"
+    LOCAL_QUORUM = "LocalQuorum"
+    EACH_QUORUM = "EachQuorum"
+    LOCAL_ONE = "LocalOne"
 
 
 @dataclass
-class ProxyConfig:
-    """Configuration that can be updated on the fly"""
-    cassandra_hosts: List[str]
-    scylla_hosts: List[str]
-    write_mode: WriteMode
-    validation_percentage: float
-    shadow_write_timeout_ms: int
-    primary_write_timeout_ms: int
+class ClusterConfig:
+    """Database cluster configuration - matches Rust ClusterConfig"""
+    driver: str  # "scylla" or "cassandra"
+    hosts: List[str]
+    port: int
+    keyspace: str
+    username: Optional[str] = None
+    password: Optional[str] = None
+    connection_timeout_secs: int = 5
+    request_timeout_secs: int = 10
+    pool_size: int = 4
+
+
+@dataclass
+class WriterConfig:
+    """Writer behavior configuration - matches Rust WriterConfig"""
+    mode: WriteMode
+    shadow_timeout_ms: int = 5000
+    retry_interval_secs: int = 60
+    max_retry_attempts: int = 3
+    batch_size: int = 100
+
+
+@dataclass
+class DualWriterConfig:
+    """Full configuration - matches Rust DualWriterConfig"""
+    source: ClusterConfig
+    target: ClusterConfig
+    writer: WriterConfig
+
+
+@dataclass 
+class WriteRequest:
+    """Write request - matches Rust WriteRequest in svckit/types.rs"""
+    keyspace: str
+    table: str
+    query: str
+    values: List[Any]
+    consistency: Optional[ConsistencyLevel] = None
+    request_id: Optional[str] = None
+    timestamp: Optional[int] = None
+    
+    def __post_init__(self):
+        if self.request_id is None:
+            self.request_id = str(uuid.uuid4())
+
+
+@dataclass
+class WriteResponse:
+    """Write response - matches Rust WriteResponse"""
+    success: bool
+    request_id: str
+    write_timestamp: int
+    latency_ms: float
+    error: Optional[str] = None
 
 
 class MigrationProxyClient:
@@ -843,100 +903,129 @@ class MigrationProxyClient:
             logger.info(f"Proxy Health: {health}")
             return health
     
+    async def get_status(self) -> Dict[str, Any]:
+        """Get current proxy status and stats"""
+        async with self.session.get(f"{self.proxy_url}/status") as response:
+            return await response.json()
+    
     async def insert(self, 
+                    keyspace: str,
                     table: str, 
                     data: Dict[str, Any],
-                    consistency: Optional[str] = None) -> Dict[str, Any]:
+                    consistency: Optional[ConsistencyLevel] = None) -> WriteResponse:
         """
         Insert data through the proxy
         
-        Example:
+        Use Case Call:
             await client.insert(
+                keyspace="iconik_production",
                 table="media_assets",
                 data={
                     "asset_id": "uuid-12345",
                     "title": "Corporate Video Q4",
-                    "duration": "1800",
+                    "duration": 1800,
                     "codec": "h264"
                 }
             )
         """
-        request = {
-            "operation": {
-                "Insert": {
-                    "table": table,
-                    "data": {str(k): str(v) for k, v in data.items()}
-                }
-            },
-            "consistency": consistency,
-            "timeout_ms": 5000
-        }
+        # Build CQL INSERT query
+        columns = list(data.keys())
+        placeholders = ", ".join(["?" for _ in columns])
+        query = f"INSERT INTO {keyspace}.{table} ({', '.join(columns)}) VALUES ({placeholders})"
+        
+        request = WriteRequest(
+            keyspace=keyspace,
+            table=table,
+            query=query,
+            values=list(data.values()),
+            consistency=consistency
+        )
         
         return await self._execute_write(request)
     
     async def update(self,
+                    keyspace: str,
                     table: str,
                     data: Dict[str, Any],
-                    key: str,
-                    consistency: Optional[str] = None) -> Dict[str, Any]:
+                    where_clause: str,
+                    where_values: List[Any],
+                    consistency: Optional[ConsistencyLevel] = None) -> WriteResponse:
         """
         Update data through the proxy
         
-        Example:
+        Use Case Call:
             await client.update(
+                keyspace="iconik_production",
                 table="media_assets",
-                data={"status": "processed", "updated_at": "2024-01-01"},
-                key="asset_id = 'uuid-12345'"
+                data={"status": "processed", "updated_at": datetime.now().isoformat()},
+                where_clause="asset_id = ?",
+                where_values=["uuid-12345"]
             )
         """
-        request = {
-            "operation": {
-                "Update": {
-                    "table": table,
-                    "data": {str(k): str(v) for k, v in data.items()},
-                    "key": key
-                }
-            },
-            "consistency": consistency,
-            "timeout_ms": 5000
-        }
+        # Build CQL UPDATE query
+        set_clause = ", ".join([f"{k} = ?" for k in data.keys()])
+        query = f"UPDATE {keyspace}.{table} SET {set_clause} WHERE {where_clause}"
+        values = list(data.values()) + where_values
+        
+        request = WriteRequest(
+            keyspace=keyspace,
+            table=table,
+            query=query,
+            values=values,
+            consistency=consistency
+        )
         
         return await self._execute_write(request)
     
     async def delete(self,
+                    keyspace: str,
                     table: str,
-                    key: str,
-                    consistency: Optional[str] = None) -> Dict[str, Any]:
+                    where_clause: str,
+                    where_values: List[Any],
+                    consistency: Optional[ConsistencyLevel] = None) -> WriteResponse:
         """
         Delete data through the proxy
         
-        Example:
+        Use Case Call:
             await client.delete(
+                keyspace="iconik_production",
                 table="media_assets",
-                key="asset_id = 'uuid-12345'"
+                where_clause="asset_id = ?",
+                where_values=["uuid-12345"]
             )
         """
-        request = {
-            "operation": {
-                "Delete": {
-                    "table": table,
-                    "key": key
-                }
-            },
-            "consistency": consistency,
-            "timeout_ms": 5000
-        }
+        query = f"DELETE FROM {keyspace}.{table} WHERE {where_clause}"
+        
+        request = WriteRequest(
+            keyspace=keyspace,
+            table=table,
+            query=query,
+            values=where_values,
+            consistency=consistency
+        )
         
         return await self._execute_write(request)
     
-    async def _execute_write(self, request: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_write(self, request: WriteRequest) -> WriteResponse:
         """Execute write operation through the proxy"""
         start_time = time.time()
+        
+        payload = {
+            "keyspace": request.keyspace,
+            "table": request.table,
+            "query": request.query,
+            "values": request.values,
+            "request_id": request.request_id,
+            "timestamp": request.timestamp
+        }
+        
+        if request.consistency:
+            payload["consistency"] = request.consistency.value
         
         try:
             async with self.session.post(
                 f"{self.proxy_url}/write",
-                json=request,
+                json=payload,
                 headers={"Content-Type": "application/json"}
             ) as response:
                 result = await response.json()
@@ -946,9 +1035,15 @@ class MigrationProxyClient:
                 latency = (time.time() - start_time) * 1000
                 self._metrics["total_latency_ms"] += latency
                 
-                if response.status == 200:
+                if response.status == 200 and result.get("success", False):
                     logger.debug(f"Write successful: {result}")
-                    return result
+                    return WriteResponse(
+                        success=result["success"],
+                        request_id=result["request_id"],
+                        write_timestamp=result["write_timestamp"],
+                        latency_ms=result["latency_ms"],
+                        error=result.get("error")
+                    )
                 else:
                     self._metrics["errors"] += 1
                     logger.error(f"Write failed with status {response.status}: {result}")
@@ -959,29 +1054,20 @@ class MigrationProxyClient:
             logger.error(f"Write operation failed: {e}")
             raise
     
-    async def update_proxy_config(self, config: ProxyConfig) -> bool:
+    async def update_write_mode(self, mode: WriteMode) -> bool:
         """
-        Update proxy configuration without restart
+        Update the write mode without restart
         This is how we progress through migration phases!
         """
-        config_dict = {
-            "cassandra_hosts": config.cassandra_hosts,
-            "scylla_hosts": config.scylla_hosts,
-            "write_mode": config.write_mode.value,
-            "validation_percentage": config.validation_percentage,
-            "shadow_write_timeout_ms": config.shadow_write_timeout_ms,
-            "primary_write_timeout_ms": config.primary_write_timeout_ms
-        }
-        
         async with self.session.post(
-            f"{self.proxy_url}/config",
-            json=config_dict
+            f"{self.proxy_url}/config/mode",
+            json={"mode": mode.value}
         ) as response:
             if response.status == 200:
-                logger.info(f"Successfully updated proxy to {config.write_mode.value} mode")
+                logger.info(f"Successfully updated proxy to {mode.value} mode")
                 return True
             else:
-                logger.error(f"Failed to update proxy config: {response.status}")
+                logger.error(f"Failed to update write mode: {response.status}")
                 return False
     
     async def get_metrics(self) -> Dict[str, Any]:
@@ -989,6 +1075,11 @@ class MigrationProxyClient:
         async with self.session.get(f"{self.proxy_url}/metrics") as response:
             metrics_text = await response.text()
             return self._parse_prometheus_metrics(metrics_text)
+    
+    async def get_stats(self) -> Dict[str, Any]:
+        """Get writer statistics"""
+        async with self.session.get(f"{self.proxy_url}/stats") as response:
+            return await response.json()
     
     def _parse_prometheus_metrics(self, metrics_text: str) -> Dict[str, Any]:
         """Parse Prometheus text format into dict"""
@@ -1024,133 +1115,88 @@ class MigrationOrchestrator:
     
     def __init__(self, proxy_client: MigrationProxyClient):
         self.proxy_client = proxy_client
-        self.current_phase = WriteMode.PRIMARY_ONLY
+        self.current_phase = WriteMode.SOURCE_ONLY
         
     async def start_shadow_writes(self):
-        """Phase 1: Begin shadow writes to ScyllaDB"""
-        logger.info("Starting Phase 1: Shadow Writes")
+        """Phase 1: Begin shadow writes to target (ScyllaDB/AWS)"""
+        logger.info("Starting Phase 1: Shadow Writes (DualAsync)")
         
-        config = ProxyConfig(
-            cassandra_hosts=["cassandra.gcp.example.com"],
-            scylla_hosts=["scylla.aws.example.com"],
-            write_mode=WriteMode.DUAL_WRITE_ASYNC,
-            validation_percentage=0.01,  # Start with 1% validation
-            shadow_write_timeout_ms=100,
-            primary_write_timeout_ms=1000
-        )
-        
-        success = await self.proxy_client.update_proxy_config(config)
+        success = await self.proxy_client.update_write_mode(WriteMode.DUAL_ASYNC)
         if success:
-            self.current_phase = WriteMode.DUAL_WRITE_ASYNC
-            logger.info("Shadow writes enabled")
+            self.current_phase = WriteMode.DUAL_ASYNC
+            logger.info("Shadow writes enabled - writes go to source sync, target async")
         return success
-    
-    async def increase_validation(self, percentage: float):
-        """Gradually increase validation percentage"""
-        logger.info(f"Increasing validation to {percentage*100}%")
-        
-        config = ProxyConfig(
-            cassandra_hosts=["cassandra.gcp.example.com"],
-            scylla_hosts=["scylla.aws.example.com"],
-            write_mode=self.current_phase,
-            validation_percentage=percentage,
-            shadow_write_timeout_ms=100,
-            primary_write_timeout_ms=1000
-        )
-        
-        return await self.proxy_client.update_proxy_config(config)
     
     async def enable_sync_writes(self):
         """Phase 2: Enable synchronous dual writes"""
-        logger.info("Starting Phase 2: Synchronous Dual Writes")
+        logger.info("Starting Phase 2: Synchronous Dual Writes (DualSync)")
         
-        config = ProxyConfig(
-            cassandra_hosts=["cassandra.gcp.example.com"],
-            scylla_hosts=["scylla.aws.example.com"],
-            write_mode=WriteMode.DUAL_WRITE_SYNC,
-            validation_percentage=0.10,  # Increase validation
-            shadow_write_timeout_ms=500,
-            primary_write_timeout_ms=1000
-        )
-        
-        success = await self.proxy_client.update_proxy_config(config)
+        success = await self.proxy_client.update_write_mode(WriteMode.DUAL_SYNC)
         if success:
-            self.current_phase = WriteMode.DUAL_WRITE_SYNC
-            logger.info("Synchronous dual writes enabled")
-        return success
-    
-    async def switch_primary_to_scylla(self):
-        """Phase 3: Make ScyllaDB the primary"""
-        logger.info("Starting Phase 3: ScyllaDB as Primary")
-        
-        config = ProxyConfig(
-            cassandra_hosts=["cassandra.gcp.example.com"],
-            scylla_hosts=["scylla.aws.example.com"],
-            write_mode=WriteMode.SHADOW_PRIMARY,
-            validation_percentage=0.05,
-            shadow_write_timeout_ms=100,
-            primary_write_timeout_ms=1000
-        )
-        
-        success = await self.proxy_client.update_proxy_config(config)
-        if success:
-            self.current_phase = WriteMode.SHADOW_PRIMARY
-            logger.info("ScyllaDB is now primary")
+            self.current_phase = WriteMode.DUAL_SYNC
+            logger.info("Synchronous dual writes enabled - both clusters must succeed")
         return success
     
     async def complete_migration(self):
-        """Phase 4: Complete migration to ScyllaDB only"""
-        logger.info("Starting Phase 4: ScyllaDB Only")
+        """Phase 3: Complete migration to target only"""
+        logger.info("Starting Phase 3: Target Only (TargetOnly)")
         
-        config = ProxyConfig(
-            cassandra_hosts=[],  # No longer needed
-            scylla_hosts=["scylla.aws.example.com"],
-            write_mode=WriteMode.TARGET_ONLY,
-            validation_percentage=0.0,  # No validation needed
-            shadow_write_timeout_ms=0,
-            primary_write_timeout_ms=1000
-        )
-        
-        success = await self.proxy_client.update_proxy_config(config)
+        success = await self.proxy_client.update_write_mode(WriteMode.TARGET_ONLY)
         if success:
             self.current_phase = WriteMode.TARGET_ONLY
-            logger.info("Migration complete! Running on ScyllaDB only")
+            logger.info("Migration complete! Running on target (ScyllaDB/AWS) only")
+        return success
+    
+    async def rollback_to_source(self):
+        """Emergency rollback to source only"""
+        logger.warning("ROLLBACK: Reverting to Source Only mode")
+        
+        success = await self.proxy_client.update_write_mode(WriteMode.SOURCE_ONLY)
+        if success:
+            self.current_phase = WriteMode.SOURCE_ONLY
+            logger.info("Rollback complete - running on source only")
         return success
     
     async def monitor_migration(self, duration_seconds: int = 60):
         """Monitor migration metrics"""
-        logger.info(f"📈 Monitoring migration for {duration_seconds} seconds...")
+        logger.info(f"Monitoring migration for {duration_seconds} seconds...")
         
         start_time = time.time()
         while time.time() - start_time < duration_seconds:
-            metrics = await self.proxy_client.get_metrics()
-            client_metrics = self.proxy_client.get_client_metrics()
-            
-            logger.info(f"""
-            Migration Metrics:
-            - Phase: {self.current_phase.value}
-            - Client writes: {client_metrics['total_writes']}
-            - Error rate: {client_metrics['error_rate']:.2%}
-            - Avg latency: {client_metrics['average_latency_ms']:.2f}ms
-            """)
+            try:
+                stats = await self.proxy_client.get_stats()
+                client_metrics = self.proxy_client.get_client_metrics()
+                
+                logger.info(f"""
+                Migration Metrics:
+                - Phase: {self.current_phase.value}
+                - Total writes: {stats.get('total_writes', 0)}
+                - Successful: {stats.get('successful_writes', 0)}
+                - Failed: {stats.get('failed_writes', 0)}
+                - Filtered: {stats.get('filtered_writes', 0)}
+                - Client avg latency: {client_metrics['average_latency_ms']:.2f}ms
+                """)
+            except Exception as e:
+                logger.error(f"Failed to get metrics: {e}")
             
             await asyncio.sleep(10)
 
 
-# Use of showing how third-party stream media application would integrate
-async def enginevector_stream_application_svc():
+# Showing how third-party media application would integrate
+async def iconik_media_application_svc():
     """
-    Showcase of how the third-party media application would use the proxy
-    The application code doesn't change - just the connection endpoint
+    How Iconik's application would use the proxy
+    The application code changes minimally - just the connection endpoint
     """
     
     # Instead of connecting directly to Cassandra, connect to the proxy
-    async with MigrationProxyClient("http://migration-proxy:8080") as client:
+    async with MigrationProxyClient("http://dual-writer:8080") as client:
         
-        # Normal application operations - no code changes needed!
+        # Normal application operations - minimal code changes!
         
         # Insert a new media asset
         await client.insert(
+            keyspace="iconik_production",
             table="media_assets",
             data={
                 "asset_id": "550e8400-e29b-41d4-a716-446655440000",
@@ -1166,24 +1212,26 @@ async def enginevector_stream_application_svc():
         
         # Update asset status after processing
         await client.update(
+            keyspace="iconik_production",
             table="media_assets",
             data={
                 "status": "transcoded",
                 "thumbnail_path": "s3://media-bucket/thumbnails/q4-2024.jpg",
                 "updated_at": datetime.now().isoformat()
             },
-            key="asset_id = '550e8400-e29b-41d4-a716-446655440000'"
+            where_clause="asset_id = ?",
+            where_values=["550e8400-e29b-41d4-a716-446655440000"]
         )
         
         # Bulk insert for batch operations
         for i in range(100):
             await client.insert(
+                keyspace="iconik_production",
                 table="media_chunks",
                 data={
                     "chunk_id": f"chunk-{i}",
                     "asset_id": "550e8400-e29b-41d4-a716-446655440000",
                     "sequence": i,
-                    "data": f"base64_encoded_chunk_{i}",
                     "size": 1048576  # 1MB chunks
                 }
             )
@@ -1195,50 +1243,44 @@ async def enginevector_stream_application_svc():
 
 async def migration_control_plane_svc():
     """
-    Scenario of how the migration would be orchestrated
+    How the migration would be orchestrated
     This would be a separate control plane service
     """
     
-    async with MigrationProxyClient("http://migration-proxy:8080") as client:
+    async with MigrationProxyClient("http://dual-writer:8080") as client:
         orchestrator = MigrationOrchestrator(client)
         
         # Check initial health
         health = await client.health_check()
         logger.info(f"Initial proxy health: {health}")
         
+        # Get current stats
+        stats = await client.get_stats()
+        logger.info(f"Current stats: {stats}")
+        
         # Phase 1: Start shadow writes
         await orchestrator.start_shadow_writes()
-        await asyncio.sleep(5)  # Let some traffic flow
-        
-        # Gradually increase validation
-        await orchestrator.increase_validation(0.05)  # 5%
-        await asyncio.sleep(5)
-        await orchestrator.increase_validation(0.10)  # 10%
-        
-        # Monitor for period of time
         await orchestrator.monitor_migration(30)
         
         # Phase 2: Synchronous writes (if metrics look good)
         await orchestrator.enable_sync_writes()
         await orchestrator.monitor_migration(30)
         
-        # Phase 3: Switch primary
-        await orchestrator.switch_primary_to_scylla()
-        await orchestrator.monitor_migration(30)
-        
-        # Phase 4: Complete migration
+        # Phase 3: Complete migration (cutover to target)
         await orchestrator.complete_migration()
+        await orchestrator.monitor_migration(30)
         
         logger.info("Migration completed successfully!")
 
 
 if __name__ == "__main__":
-    # Run the services
-    asyncio.run(enginevector_stream_application_svc())
+    # Run the application
+    asyncio.run(iconik_media_application_svc())
     
     # Uncomment to run migration orchestration
     # asyncio.run(migration_control_plane_svc())
 ```
+
 
 
 ## The SSTableLoader Bulk Transfer Processor
