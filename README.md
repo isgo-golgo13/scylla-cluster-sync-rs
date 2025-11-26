@@ -1468,9 +1468,84 @@ cargo build --bin sstable-loader
 ```
 
 **Or** with the provided root Makefile.
+```
+# =============================================================================
+# Building Scylla Cluster Sync Services
+# =============================================================================
 
+# --- Native Rust Builds ---
 
- 
+# Build all services (debug mode - faster compilation)
+make build
+
+# Build all services (release mode - optimized binaries)
+make build-release
+
+# Build individual services (release mode)
+make dual-writer
+make dual-reader
+make sstable-loader
+
+# Alternative: using cargo directly
+cargo build --workspace                    # debug
+cargo build --workspace --release          # release
+cargo build --release --bin dual-writer    # single service
+
+# --- Docker Builds ---
+
+# Build all Docker images
+make docker-build
+
+# Build individual Docker images
+make docker-build-dual-writer
+make docker-build-dual-reader
+make docker-build-sstable-loader
+
+# Alternative: using docker directly
+docker build -f services/dual-writer/Dockerfile.dual-writer -t dual-writer:latest .
+docker build -f services/dual-reader/Dockerfile.dual-reader -t dual-reader:latest .
+docker build -f services/sstable-loader/Dockerfile.sstable-loader -t sstable-loader:latest .
+
+# --- Docker Compose ---
+
+# Start all services (ScyllaDB + migration services + monitoring)
+make docker-up
+
+# Start with logs attached
+make docker-up-logs
+
+# View logs
+make docker-logs
+
+# Stop all services
+make docker-down
+
+# Stop and remove volumes (clean slate)
+make docker-clean
+
+# --- Development Workflow ---
+
+# Start only ScyllaDB instances for local development
+make dev-db
+
+# Run services locally (after make build)
+make run-dual-writer      # localhost:8080
+make run-dual-reader      # localhost:8082
+make run-sstable-loader   # localhost:8081
+
+# --- Code Quality ---
+
+make fmt          # Format code
+make clippy       # Run linter
+make test         # Run tests
+make check        # Quick syntax check
+make fix          # Auto-fix warnings
+
+# --- Binaries Location ---
+
+# Debug builds:   ./target/debug/{dual-writer,dual-reader,sstable-loader}
+# Release builds: ./target/release/{dual-writer,dual-reader,sstable-loader}
+```
 
 
 
