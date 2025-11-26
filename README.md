@@ -1552,7 +1552,7 @@ make test         # Run tests
 make check        # Quick syntax check
 make fix          # Auto-fix warnings
 
-# --- Binaries Location ---
+# --- Service Artifacts Location ---
 
 # Debug builds:   ./target/debug/{dual-writer,dual-reader,sstable-loader}
 # Release builds: ./target/release/{dual-writer,dual-reader,sstable-loader}
