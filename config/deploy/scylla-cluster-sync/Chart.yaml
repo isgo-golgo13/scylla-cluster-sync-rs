@@ -1,0 +1,31 @@
+apiVersion: v2
+name: scylla-cluster-sync
+description: |
+  Zero-downtime database migration toolkit for Cassandra/ScyllaDB.
+  Includes dual-writer (write proxy), sstable-loader (bulk migration),
+  and dual-reader (consistency validation) services.
+
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+
+keywords:
+  - scylladb
+  - cassandra
+  - migration
+  - database
+  - dual-write
+
+home: https://github.com/enginevector/scylla-cluster-sync-rs
+sources:
+  - https://github.com/enginevector/scylla-cluster-sync-rs
+
+maintainers:
+  - name: EngineVector
+    email: engineering@enginevector.com
+
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/category: database
+
+dependencies: []

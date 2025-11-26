@@ -1,0 +1,391 @@
+{{/* DUAL-WRITER */}}
+{{- if .Values.dualWriter.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "scylla-cluster-sync.fullname" . }}-dual-writer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "scylla-cluster-sync.dualWriter.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.dualWriter.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "scylla-cluster-sync.dualWriter.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "scylla-cluster-sync.dualWriter.selectorLabels" . | nindent 8 }}
+      annotations:
+        {{- include "scylla-cluster-sync.configChecksum" . | nindent 8 }}
+        {{- with .Values.dualWriter.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- include "scylla-cluster-sync.imagePullSecrets" . | nindent 6 }}
+      serviceAccountName: {{ include "scylla-cluster-sync.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.dualWriter.podSecurityContext | nindent 8 }}
+      containers:
+        - name: dual-writer
+          image: {{ include "scylla-cluster-sync.image" (dict "service" .Values.dualWriter "global" .Values.global "Chart" .Chart) }}
+          imagePullPolicy: {{ include "scylla-cluster-sync.imagePullPolicy" (dict "service" .Values.dualWriter "global" .Values.global) }}
+          args:
+            - --config
+            - /config/dual-writer.yaml
+            - --port
+            - "{{ .Values.dualWriter.service.port }}"
+          ports:
+            - name: http
+              containerPort: {{ .Values.dualWriter.service.port }}
+            - name: metrics
+              containerPort: {{ .Values.dualWriter.service.metricsPort }}
+          env:
+            {{- include "scylla-cluster-sync.commonEnv" . | nindent 12 }}
+            {{- include "scylla-cluster-sync.databaseEnv" . | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.dualWriter.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.dualWriter.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            {{- toYaml .Values.dualWriter.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.dualWriter.readinessProbe | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "scylla-cluster-sync.fullname" . }}-dual-writer
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.dualWriter.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.dualWriter.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.dualWriter.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.dualWriter.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "scylla-cluster-sync.fullname" . }}-dual-writer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "scylla-cluster-sync.dualWriter.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.dualWriter.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.dualWriter.service.port }}
+      targetPort: http
+    - name: metrics
+      port: {{ .Values.dualWriter.service.metricsPort }}
+      targetPort: metrics
+  selector:
+    {{- include "scylla-cluster-sync.dualWriter.selectorLabels" . | nindent 4 }}
+{{- if .Values.dualWriter.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "scylla-cluster-sync.fullname" . }}-dual-writer
+  namespace: {{ .Release.Namespace }}
+spec:
+  {{- if .Values.dualWriter.pdb.minAvailable }}
+  minAvailable: {{ .Values.dualWriter.pdb.minAvailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "scylla-cluster-sync.dualWriter.selectorLabels" . | nindent 6 }}
+{{- end }}
+{{- end }}
+
+{{/* DUAL-READER */}}
+{{- if .Values.dualReader.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "scylla-cluster-sync.fullname" . }}-dual-reader
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "scylla-cluster-sync.dualReader.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.dualReader.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "scylla-cluster-sync.dualReader.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "scylla-cluster-sync.dualReader.selectorLabels" . | nindent 8 }}
+      annotations:
+        {{- include "scylla-cluster-sync.configChecksum" . | nindent 8 }}
+        {{- with .Values.dualReader.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- include "scylla-cluster-sync.imagePullSecrets" . | nindent 6 }}
+      serviceAccountName: {{ include "scylla-cluster-sync.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.dualReader.podSecurityContext | nindent 8 }}
+      containers:
+        - name: dual-reader
+          image: {{ include "scylla-cluster-sync.image" (dict "service" .Values.dualReader "global" .Values.global "Chart" .Chart) }}
+          imagePullPolicy: {{ include "scylla-cluster-sync.imagePullPolicy" (dict "service" .Values.dualReader "global" .Values.global) }}
+          args:
+            - --config
+            - /config/dual-reader.yaml
+            - --port
+            - "{{ .Values.dualReader.service.port }}"
+          ports:
+            - name: http
+              containerPort: {{ .Values.dualReader.service.port }}
+            - name: metrics
+              containerPort: {{ .Values.dualReader.service.metricsPort }}
+          env:
+            {{- include "scylla-cluster-sync.commonEnv" . | nindent 12 }}
+            {{- include "scylla-cluster-sync.databaseEnv" . | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.dualReader.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.dualReader.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            {{- toYaml .Values.dualReader.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.dualReader.readinessProbe | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "scylla-cluster-sync.fullname" . }}-dual-reader
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.dualReader.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.dualReader.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.dualReader.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "scylla-cluster-sync.fullname" . }}-dual-reader
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "scylla-cluster-sync.dualReader.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.dualReader.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.dualReader.service.port }}
+      targetPort: http
+    - name: metrics
+      port: {{ .Values.dualReader.service.metricsPort }}
+      targetPort: metrics
+  selector:
+    {{- include "scylla-cluster-sync.dualReader.selectorLabels" . | nindent 4 }}
+{{- if .Values.dualReader.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "scylla-cluster-sync.fullname" . }}-dual-reader
+  namespace: {{ .Release.Namespace }}
+spec:
+  {{- if .Values.dualReader.pdb.minAvailable }}
+  minAvailable: {{ .Values.dualReader.pdb.minAvailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "scylla-cluster-sync.dualReader.selectorLabels" . | nindent 6 }}
+{{- end }}
+{{- end }}
+
+{{/* SSTABLE-LOADER */}}
+{{- if .Values.sstableLoader.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "scylla-cluster-sync.fullname" . }}-sstable-loader
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "scylla-cluster-sync.sstableLoader.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.sstableLoader.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "scylla-cluster-sync.sstableLoader.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "scylla-cluster-sync.sstableLoader.selectorLabels" . | nindent 8 }}
+      annotations:
+        {{- include "scylla-cluster-sync.configChecksum" . | nindent 8 }}
+        {{- with .Values.sstableLoader.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- include "scylla-cluster-sync.imagePullSecrets" . | nindent 6 }}
+      serviceAccountName: {{ include "scylla-cluster-sync.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.sstableLoader.podSecurityContext | nindent 8 }}
+      containers:
+        - name: sstable-loader
+          image: {{ include "scylla-cluster-sync.image" (dict "service" .Values.sstableLoader "global" .Values.global "Chart" .Chart) }}
+          imagePullPolicy: {{ include "scylla-cluster-sync.imagePullPolicy" (dict "service" .Values.sstableLoader "global" .Values.global) }}
+          args:
+            - --config
+            - /config/sstable-loader.yaml
+            - --port
+            - "{{ .Values.sstableLoader.service.port }}"
+            {{- if .Values.indexManager.enabled }}
+            - --indexes
+            - /config/indexes.yaml
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.sstableLoader.service.port }}
+            - name: metrics
+              containerPort: {{ .Values.sstableLoader.service.metricsPort }}
+          env:
+            {{- include "scylla-cluster-sync.commonEnv" . | nindent 12 }}
+            {{- include "scylla-cluster-sync.databaseEnv" . | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.sstableLoader.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.sstableLoader.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            {{- if .Values.sstableLoader.persistence.enabled }}
+            - name: checkpoints
+              mountPath: {{ .Values.sstableLoader.persistence.mountPath }}
+            {{- end }}
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            {{- toYaml .Values.sstableLoader.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.sstableLoader.readinessProbe | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "scylla-cluster-sync.fullname" . }}-sstable-loader
+        {{- if .Values.sstableLoader.persistence.enabled }}
+        - name: checkpoints
+          persistentVolumeClaim:
+            claimName: {{ include "scylla-cluster-sync.fullname" . }}-sstable-loader
+        {{- end }}
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.sstableLoader.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.sstableLoader.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.sstableLoader.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "scylla-cluster-sync.fullname" . }}-sstable-loader
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "scylla-cluster-sync.sstableLoader.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.sstableLoader.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.sstableLoader.service.port }}
+      targetPort: http
+    - name: metrics
+      port: {{ .Values.sstableLoader.service.metricsPort }}
+      targetPort: metrics
+  selector:
+    {{- include "scylla-cluster-sync.sstableLoader.selectorLabels" . | nindent 4 }}
+{{- if .Values.sstableLoader.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "scylla-cluster-sync.fullname" . }}-sstable-loader
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - {{ .Values.sstableLoader.persistence.accessMode }}
+  {{- if .Values.sstableLoader.persistence.storageClass }}
+  storageClassName: {{ .Values.sstableLoader.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.sstableLoader.persistence.size }}
+{{- end }}
+{{- if .Values.sstableLoader.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "scylla-cluster-sync.fullname" . }}-sstable-loader
+  namespace: {{ .Release.Namespace }}
+spec:
+  {{- if .Values.sstableLoader.pdb.minAvailable }}
+  minAvailable: {{ .Values.sstableLoader.pdb.minAvailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "scylla-cluster-sync.sstableLoader.selectorLabels" . | nindent 6 }}
+{{- end }}
+{{- end }}
+
+{{/* SERVICE ACCOUNT */}}
+{{- if .Values.serviceAccount.create }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "scylla-cluster-sync.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "scylla-cluster-sync.labels" . | nindent 4 }}
+  {{- with .Values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

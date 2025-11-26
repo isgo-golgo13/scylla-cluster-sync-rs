@@ -1,0 +1,147 @@
+{{/* DUAL-WRITER CONFIG */}}
+{{- if .Values.dualWriter.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "scylla-cluster-sync.fullname" . }}-dual-writer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "scylla-cluster-sync.dualWriter.labels" . | nindent 4 }}
+data:
+  dual-writer.yaml: |
+    source:
+      driver: {{ .Values.database.source.driver | quote }}
+      hosts:
+        {{- range .Values.database.source.hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      port: {{ .Values.database.source.port }}
+      keyspace: {{ .Values.database.source.keyspace | quote }}
+      connection_timeout_secs: {{ .Values.database.source.connectionTimeoutSecs }}
+      request_timeout_secs: {{ .Values.database.source.requestTimeoutSecs }}
+      pool_size: {{ .Values.database.source.poolSize }}
+    
+    target:
+      driver: {{ .Values.database.target.driver | quote }}
+      hosts:
+        {{- range .Values.database.target.hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      port: {{ .Values.database.target.port }}
+      keyspace: {{ .Values.database.target.keyspace | quote }}
+      connection_timeout_secs: {{ .Values.database.target.connectionTimeoutSecs }}
+      request_timeout_secs: {{ .Values.database.target.requestTimeoutSecs }}
+      pool_size: {{ .Values.database.target.poolSize }}
+    
+    writer:
+      mode: {{ .Values.writer.mode }}
+      shadow_timeout_ms: {{ .Values.writer.shadowTimeoutMs }}
+      retry_interval_secs: {{ .Values.writer.retryIntervalSecs }}
+      max_retry_attempts: {{ .Values.writer.maxRetryAttempts }}
+      batch_size: {{ .Values.writer.batchSize }}
+    
+    observability:
+      metrics_port: {{ .Values.dualWriter.service.metricsPort }}
+      log_level: "info"
+{{- end }}
+
+{{/* DUAL-READER CONFIG */}}
+{{- if .Values.dualReader.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "scylla-cluster-sync.fullname" . }}-dual-reader
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "scylla-cluster-sync.dualReader.labels" . | nindent 4 }}
+data:
+  dual-reader.yaml: |
+    source:
+      driver: {{ .Values.database.source.driver | quote }}
+      hosts:
+        {{- range .Values.database.source.hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      port: {{ .Values.database.source.port }}
+      keyspace: {{ .Values.database.source.keyspace | quote }}
+      connection_timeout_secs: {{ .Values.database.source.connectionTimeoutSecs }}
+      request_timeout_secs: {{ .Values.database.source.requestTimeoutSecs }}
+      pool_size: {{ .Values.database.source.poolSize }}
+    
+    target:
+      driver: {{ .Values.database.target.driver | quote }}
+      hosts:
+        {{- range .Values.database.target.hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      port: {{ .Values.database.target.port }}
+      keyspace: {{ .Values.database.target.keyspace | quote }}
+      connection_timeout_secs: {{ .Values.database.target.connectionTimeoutSecs }}
+      request_timeout_secs: {{ .Values.database.target.requestTimeoutSecs }}
+      pool_size: {{ .Values.database.target.poolSize }}
+    
+    reader:
+      sample_rate: 0.01
+      batch_size: 1000
+      parallel_readers: 4
+    
+    observability:
+      metrics_port: {{ .Values.dualReader.service.metricsPort }}
+      log_level: "info"
+{{- end }}
+
+{{/* SSTABLE-LOADER CONFIG */}}
+{{- if .Values.sstableLoader.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "scylla-cluster-sync.fullname" . }}-sstable-loader
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "scylla-cluster-sync.sstableLoader.labels" . | nindent 4 }}
+data:
+  sstable-loader.yaml: |
+    source:
+      driver: {{ .Values.database.source.driver | quote }}
+      hosts:
+        {{- range .Values.database.source.hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      port: {{ .Values.database.source.port }}
+      keyspace: {{ .Values.database.source.keyspace | quote }}
+      connection_timeout_secs: {{ .Values.database.source.connectionTimeoutSecs }}
+      request_timeout_secs: {{ .Values.database.source.requestTimeoutSecs }}
+      pool_size: {{ .Values.database.source.poolSize }}
+    
+    target:
+      driver: {{ .Values.database.target.driver | quote }}
+      hosts:
+        {{- range .Values.database.target.hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      port: {{ .Values.database.target.port }}
+      keyspace: {{ .Values.database.target.keyspace | quote }}
+      connection_timeout_secs: {{ .Values.database.target.connectionTimeoutSecs }}
+      request_timeout_secs: {{ .Values.database.target.requestTimeoutSecs }}
+      pool_size: {{ .Values.database.target.poolSize }}
+    
+    loader:
+      batch_size: {{ .Values.writer.batchSize }}
+      parallel_workers: 8
+      checkpoint_interval_secs: 60
+      checkpoint_path: {{ .Values.sstableLoader.persistence.mountPath | default "/checkpoints" | quote }}
+    
+    observability:
+      metrics_port: {{ .Values.sstableLoader.service.metricsPort }}
+      log_level: "info"
+  
+  {{- if .Values.indexManager.enabled }}
+  indexes.yaml: |
+    strategy: {{ .Values.indexManager.strategy }}
+    concurrency: {{ .Values.indexManager.concurrency }}
+    indexes: []
+  {{- end }}
+{{- end }}

@@ -1,0 +1,367 @@
+# =============================================================================
+# Scylla Cluster Sync - Production Values
+# =============================================================================
+
+global:
+  imagePullPolicy: IfNotPresent
+  commonLabels:
+    environment: production
+  commonAnnotations:
+    owner: platform-team
+
+# -----------------------------------------------------------------------------
+# Dual-Writer Production
+# -----------------------------------------------------------------------------
+dualWriter:
+  replicaCount: 5
+  
+  resources:
+    requests:
+      cpu: 2000m
+      memory: 4Gi
+    limits:
+      cpu: 4000m
+      memory: 8Gi
+  
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"
+    prometheus.io/path: "/metrics"
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+  
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/component: dual-writer
+  
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/component: dual-writer
+            topologyKey: kubernetes.io/hostname
+  
+  pdb:
+    enabled: true
+    minAvailable: 3
+
+# -----------------------------------------------------------------------------
+# Dual-Reader Production
+# -----------------------------------------------------------------------------
+dualReader:
+  replicaCount: 3
+  
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+  
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/component: dual-reader
+  
+  pdb:
+    enabled: true
+    minAvailable: 2
+
+# -----------------------------------------------------------------------------
+# SSTable-Loader Production
+# -----------------------------------------------------------------------------
+sstableLoader:
+  replicaCount: 3
+  
+  resources:
+    requests:
+      cpu: 4000m
+      memory: 8Gi
+    limits:
+      cpu: 8000m
+      memory: 16Gi
+  
+  persistence:
+    enabled: true
+    storageClass: gp3
+    size: 100Gi
+  
+  nodeSelector:
+    node.kubernetes.io/instance-type: r6i.2xlarge
+  
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: migration
+      effect: NoSchedule
+  
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+# -----------------------------------------------------------------------------
+# Database Production
+# -----------------------------------------------------------------------------
+database:
+  source:
+    driver: cassandra
+    hosts:
+      - cassandra-0.cassandra.gcp.svc.cluster.local
+      - cassandra-1.cassandra.gcp.svc.cluster.local
+      - cassandra-2.cassandra.gcp.svc.cluster.local
+    port: 9042
+    keyspace: iconik_production
+    connectionTimeoutSecs: 10
+    requestTimeoutSecs: 30
+    poolSize: 8
+  
+  target:
+    driver: scylla
+    hosts:
+      - scylla-client.scylla.aws.svc.cluster.local
+    port: 9042
+    keyspace: iconik_production
+    connectionTimeoutSecs: 10
+    requestTimeoutSecs: 30
+    poolSize: 8
+
+writer:
+  mode: DualAsync
+  shadowTimeoutMs: 10000
+  retryIntervalSecs: 30
+  maxRetryAttempts: 5
+  batchSize: 500
+
+indexManager:
+  enabled: true
+  strategy: by_keyspace
+  concurrency: 8
+
+# -----------------------------------------------------------------------------
+# Gateway Production
+# -----------------------------------------------------------------------------
+gateway:
+  enabled: true
+  create: false
+  name: production-gateway
+  gatewayClassName: envoy-gateway
+  
+  routes:
+    dualWriter:
+      enabled: true
+      hostnames:
+        - migration.prod.iconik.io
+      path: /api/v1/write
+      pathType: PathPrefix
+    
+    dualReader:
+      enabled: true
+      hostnames:
+        - migration.prod.iconik.io
+      path: /api/v1/validate
+      pathType: PathPrefix
+    
+    sstableLoader:
+      enabled: true
+      hostnames:
+        - migration.prod.iconik.io
+      path: /api/v1/migration
+      pathType: PathPrefix
+
+# -----------------------------------------------------------------------------
+# External Secrets Production
+# -----------------------------------------------------------------------------
+externalSecrets:
+  enabled: true
+  
+  secretStore:
+    name: aws-secrets-manager
+    kind: ClusterSecretStore
+  
+  refreshInterval: 15m
+  
+  secrets:
+    sourceDatabase:
+      remoteRef:
+        key: production/iconik/cassandra-credentials
+      properties:
+        - username
+        - password
+    
+    targetDatabase:
+      remoteRef:
+        key: production/iconik/scylla-credentials
+      properties:
+        - username
+        - password
+
+# -----------------------------------------------------------------------------
+# Scaling Production
+# -----------------------------------------------------------------------------
+scaling:
+  vpa:
+    enabled: true
+    updateMode: Auto
+    
+    dualWriter:
+      minAllowed:
+        cpu: 1000m
+        memory: 2Gi
+      maxAllowed:
+        cpu: 8000m
+        memory: 16Gi
+    
+    dualReader:
+      minAllowed:
+        cpu: 250m
+        memory: 512Mi
+      maxAllowed:
+        cpu: 4000m
+        memory: 8Gi
+    
+    sstableLoader:
+      minAllowed:
+        cpu: 2000m
+        memory: 4Gi
+      maxAllowed:
+        cpu: 16000m
+        memory: 32Gi
+  
+  hpa:
+    enabled: false
+  
+  keda:
+    enabled: true
+    pollingInterval: 15
+    cooldownPeriod: 180
+    
+    dualWriter:
+      minReplicas: 5
+      maxReplicas: 50
+      triggers:
+        - type: redis
+          metadata:
+            address: redis-master.redis.svc.cluster.local:6379
+            listName: dual-writer-queue
+            listLength: "50"
+            enableTLS: "true"
+          authenticationRef:
+            name: keda-redis-auth
+        - type: prometheus
+          metadata:
+            serverAddress: http://prometheus.monitoring.svc.cluster.local:9090
+            metricName: dual_writer_pending_writes
+            query: sum(dual_writer_pending_writes{namespace="migration"})
+            threshold: "1000"
+    
+    sstableLoader:
+      minReplicas: 1
+      maxReplicas: 10
+      triggers:
+        - type: redis
+          metadata:
+            address: redis-master.redis.svc.cluster.local:6379
+            listName: migration-tasks
+            listLength: "5"
+            enableTLS: "true"
+          authenticationRef:
+            name: keda-redis-auth
+
+# -----------------------------------------------------------------------------
+# Monitoring Production
+# -----------------------------------------------------------------------------
+monitoring:
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+    interval: 15s
+    scrapeTimeout: 10s
+    labels:
+      release: prometheus
+    honorLabels: true
+  
+  prometheusRule:
+    enabled: true
+    namespace: monitoring
+    labels:
+      release: prometheus
+    rules:
+      - alert: DualWriterHighErrorRate
+        expr: |
+          (
+            rate(dual_writer_errors_total[5m]) / 
+            rate(dual_writer_writes_total[5m])
+          ) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+          service: dual-writer
+        annotations:
+          summary: "Dual-Writer error rate above 1%"
+          description: "Error rate is {{ $value | humanizePercentage }}"
+      
+      - alert: DualWriterHighLatency
+        expr: |
+          histogram_quantile(0.99, 
+            rate(dual_writer_latency_seconds_bucket[5m])
+          ) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          service: dual-writer
+        annotations:
+          summary: "Dual-Writer p99 latency above 500ms"
+      
+      - alert: SSTableLoaderStalled
+        expr: |
+          increase(sstable_loader_rows_migrated_total[10m]) == 0 
+          and sstable_loader_migration_running == 1
+        for: 15m
+        labels:
+          severity: critical
+          service: sstable-loader
+        annotations:
+          summary: "SSTable-Loader migration appears stalled"
+      
+      - alert: DataConsistencyDrift
+        expr: dual_reader_consistency_percentage < 99.9
+        for: 10m
+        labels:
+          severity: critical
+          service: dual-reader
+        annotations:
+          summary: "Data consistency below 99.9%"
+      
+      - alert: ServiceDown
+        expr: up{job=~"dual-writer|dual-reader|sstable-loader"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} is down"
+
+networkPolicy:
+  enabled: true
+  ingressNamespaces:
+    - istio-system
+    - monitoring
+    - migration
+  egressNamespaces:
+    - cassandra
+    - scylla
+    - redis
+
+serviceAccount:
+  create: true
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/scylla-cluster-sync-prod

@@ -1,0 +1,137 @@
+{{/* VPA */}}
+{{- if .Values.scaling.vpa.enabled }}
+{{- if .Values.dualWriter.enabled }}
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: {{ include "scylla-cluster-sync.fullname" . }}-dual-writer
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "scylla-cluster-sync.fullname" . }}-dual-writer
+  updatePolicy:
+    updateMode: {{ .Values.scaling.vpa.updateMode | quote }}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: dual-writer
+        minAllowed:
+          cpu: {{ .Values.scaling.vpa.dualWriter.minAllowed.cpu }}
+          memory: {{ .Values.scaling.vpa.dualWriter.minAllowed.memory }}
+        maxAllowed:
+          cpu: {{ .Values.scaling.vpa.dualWriter.maxAllowed.cpu }}
+          memory: {{ .Values.scaling.vpa.dualWriter.maxAllowed.memory }}
+{{- end }}
+{{- if .Values.dualReader.enabled }}
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: {{ include "scylla-cluster-sync.fullname" . }}-dual-reader
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "scylla-cluster-sync.fullname" . }}-dual-reader
+  updatePolicy:
+    updateMode: {{ .Values.scaling.vpa.updateMode | quote }}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: dual-reader
+        minAllowed:
+          cpu: {{ .Values.scaling.vpa.dualReader.minAllowed.cpu }}
+          memory: {{ .Values.scaling.vpa.dualReader.minAllowed.memory }}
+        maxAllowed:
+          cpu: {{ .Values.scaling.vpa.dualReader.maxAllowed.cpu }}
+          memory: {{ .Values.scaling.vpa.dualReader.maxAllowed.memory }}
+{{- end }}
+{{- if .Values.sstableLoader.enabled }}
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: {{ include "scylla-cluster-sync.fullname" . }}-sstable-loader
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "scylla-cluster-sync.fullname" . }}-sstable-loader
+  updatePolicy:
+    updateMode: {{ .Values.scaling.vpa.updateMode | quote }}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: sstable-loader
+        minAllowed:
+          cpu: {{ .Values.scaling.vpa.sstableLoader.minAllowed.cpu }}
+          memory: {{ .Values.scaling.vpa.sstableLoader.minAllowed.memory }}
+        maxAllowed:
+          cpu: {{ .Values.scaling.vpa.sstableLoader.maxAllowed.cpu }}
+          memory: {{ .Values.scaling.vpa.sstableLoader.maxAllowed.memory }}
+{{- end }}
+{{- end }}
+
+{{/* KEDA */}}
+{{- if .Values.scaling.keda.enabled }}
+{{- if and .Values.dualWriter.enabled .Values.scaling.keda.dualWriter }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "scylla-cluster-sync.fullname" . }}-dual-writer
+  namespace: {{ .Release.Namespace }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "scylla-cluster-sync.fullname" . }}-dual-writer
+  pollingInterval: {{ .Values.scaling.keda.pollingInterval }}
+  cooldownPeriod: {{ .Values.scaling.keda.cooldownPeriod }}
+  minReplicaCount: {{ .Values.scaling.keda.dualWriter.minReplicas }}
+  maxReplicaCount: {{ .Values.scaling.keda.dualWriter.maxReplicas }}
+  triggers:
+    {{- range .Values.scaling.keda.dualWriter.triggers }}
+    - type: {{ .type }}
+      metadata:
+        {{- range $key, $value := .metadata }}
+        {{ $key }}: {{ $value | quote }}
+        {{- end }}
+      {{- if .authenticationRef }}
+      authenticationRef:
+        name: {{ .authenticationRef.name }}
+      {{- end }}
+    {{- end }}
+{{- end }}
+{{- if and .Values.sstableLoader.enabled .Values.scaling.keda.sstableLoader }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "scylla-cluster-sync.fullname" . }}-sstable-loader
+  namespace: {{ .Release.Namespace }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "scylla-cluster-sync.fullname" . }}-sstable-loader
+  pollingInterval: {{ .Values.scaling.keda.pollingInterval }}
+  cooldownPeriod: {{ .Values.scaling.keda.cooldownPeriod }}
+  minReplicaCount: {{ .Values.scaling.keda.sstableLoader.minReplicas }}
+  maxReplicaCount: {{ .Values.scaling.keda.sstableLoader.maxReplicas }}
+  triggers:
+    {{- range .Values.scaling.keda.sstableLoader.triggers }}
+    - type: {{ .type }}
+      metadata:
+        {{- range $key, $value := .metadata }}
+        {{ $key }}: {{ $value | quote }}
+        {{- end }}
+      {{- if .authenticationRef }}
+      authenticationRef:
+        name: {{ .authenticationRef.name }}
+      {{- end }}
+    {{- end }}
+{{- end }}
+{{- end }}

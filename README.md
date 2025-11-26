@@ -22,50 +22,94 @@ The following graphic shows the architectual workflow of the `Dual-Write Proxy` 
 The `Dual-Write` Pattern is executed as follows (high-level). See the following section `The Dual-Write Proxy Service Pattern (Low-Level)` for in-depth execution of the code.
 
 ```rust
-async fn write_dual_async(
-    &self,
-    request: WriteRequest,
-    config: &ProxyConfig,
-) -> Result<WriteResponse, ProxyError> {
-    let query = self.build_cql_query(&request);
+async fn write_dual_async(&self, request: &WriteRequest) -> Result<WriteResponse, SyncError> {
+    let query = QueryBuilder::build_insert_query(request);
+    let start = Instant::now();
     
-    // 1. SYNCHRONOUS write to Cassandra (PRIMARY) - This BLOCKS!
-    let cassandra_result = self.execute_cassandra_query(&query).await;
-    let primary_latency = timer.stop_and_record();
+    // 1. SYNCHRONOUS write to source (PRIMARY) - This BLOCKS!
+    self.source_conn.execute(&query, request.values.clone()).await?;
+    let primary_latency = start.elapsed().as_secs_f64() * 1000.0;
     
-    // 2. ASYNCHRONOUS write to ScyllaDB (SHADOW) - Fire and forget!
-    let scylla = self.scylla.clone();
+    // 2. Check FilterGovernor before shadow write (tenant/table blacklist)
+    let should_write_to_target = self.filter_governor.should_write_to_target(request).await;
+    
+    if !should_write_to_target {
+        // Tenant/table is blacklisted - skip target write entirely
+        info!(
+            "Skipping target write for blacklisted request: {}.{}", 
+            request.keyspace, request.table
+        );
+        
+        let mut stats = self.stats.lock();
+        stats.filtered_writes += 1;
+        
+        return Ok(WriteResponse {
+            success: true,
+            request_id: request.request_id,
+            write_timestamp: request.timestamp.unwrap_or(0),
+            latency_ms: primary_latency,
+            error: None,
+        });
+    }
+    
+    // 3. ASYNCHRONOUS write to target (SHADOW) - Fire and forget!
+    let target_conn = self.target_conn.clone();
+    let request_clone = request.clone();
     let query_clone = query.clone();
+    let failed_writes = self.failed_writes.clone();
+    let config = self.config.read().await.clone();
     
     tokio::spawn(async move {  // <-- This spawns a separate task!
-        match Self::execute_scylla_query(&scylla, &query_clone).await {
-            Ok(_) => {
+        let timeout = Duration::from_millis(config.writer.shadow_timeout_ms);
+        let result = tokio::time::timeout(
+            timeout,
+            target_conn.execute(&query_clone, request_clone.values.clone())
+        ).await;
+        
+        match result {
+            Ok(Ok(_)) => {
                 // Shadow write succeeded
-                WRITE_COUNTER.with_label_values(&["scylla", "shadow_success"]).inc();
+                info!("Shadow write successful for request {}", request_clone.request_id);
             }
-            Err(e) => {
-                // Shadow write failed, log however DON'T fail the request
-                warn!("Shadow write to ScyllaDB failed: {}", e);
+            Ok(Err(e)) => {
+                // Shadow write failed - queue for retry, DON'T fail the request
+                warn!("Shadow write failed for request {}: {:?}", request_clone.request_id, e);
+                failed_writes.insert(
+                    request_clone.request_id,
+                    FailedWrite {
+                        request: request_clone,
+                        error: e.to_string(),
+                        attempts: 1,
+                        first_attempt: SystemTime::now(),
+                    }
+                );
+            }
+            Err(_) => {
+                // Shadow write timed out - queue for retry
+                warn!("Shadow write timed out for request {}", request_clone.request_id);
+                failed_writes.insert(
+                    request_clone.request_id,
+                    FailedWrite {
+                        request: request_clone.clone(),
+                        error: "Timeout".to_string(),
+                        attempts: 1,
+                        first_attempt: SystemTime::now(),
+                    }
+                );
             }
         }
     });
     
-    // 3. Return based on PRIMARY (Cassandra) result ONLY
-    match cassandra_result {
-        Ok(_) => {
-            // Success returned immediately after Cassandra write
-            // No wait for ScyllaDB
-            Ok(WriteResponse {
-                success: true,
-                latency_ms: primary_latency * 1000.0,
-                database: "cassandra_primary".to_string(),
-            })
-        }
-        Err(e) => {
-            // Only fail if Cassandra fails
-            Err(ProxyError::DatabaseError(e.to_string()))
-        }
-    }
+    // 4. Return based on PRIMARY (source) result ONLY
+    //    Success returned immediately after source write
+    //    No wait for target - shadow write is fire-and-forget
+    Ok(WriteResponse {
+        success: true,
+        request_id: request.request_id,
+        write_timestamp: request.timestamp.unwrap_or(0),
+        latency_ms: primary_latency,
+        error: None,
+    })
 }
 ```
 
@@ -1599,6 +1643,56 @@ make fix          # Auto-fix warnings
 # Debug builds:   ./target/debug/{dual-writer,dual-reader,sstable-loader}
 # Release builds: ./target/release/{dual-writer,dual-reader,sstable-loader}
 ```
+
+
+## Kubernetes Deployment Architecture 
+
+### Unified Kubernetes Helm Chart Structure
+
+```shell
+config/deploy/scylla-cluster-sync/
+├── Chart.yaml
+├── values.yaml
+├── values-production.yaml
+└── templates/
+    ├── _helpers.tpl
+    ├── app.yaml
+    ├── app-config.yaml
+    ├── app-secrets.yaml
+    ├── app-scaling.yaml
+    ├── app-gateway.yaml
+    └── app-monitoring.yaml
+```
+
+### Deploying the Services using Unified Kubernetes Helm Chart
+
+```shell
+# Install all 3 services (default)
+helm install migration ./config/deploy/scylla-cluster-sync \
+  --namespace migration --create-namespace
+
+# Install only dual-writer and dual-reader (skip sstable-loader)
+helm install migration ./config/deploy/scylla-cluster-sync \
+  --namespace migration --create-namespace \
+  --set sstableLoader.enabled=false
+
+# Install only dual-writer
+helm install dual-writer ./config/deploy/scylla-cluster-sync \
+  --namespace migration --create-namespace \
+  --set dualReader.enabled=false \
+  --set sstableLoader.enabled=false
+
+# Production deployment
+helm install migration ./config/deploy/scylla-cluster-sync \
+  --namespace migration --create-namespace \
+  -f ./config/deploy/scylla-cluster-sync/values-production.yaml
+
+# Dry-run
+helm template migration ./config/deploy/scylla-cluster-sync \
+  --debug
+```
+
+
 
 
 
