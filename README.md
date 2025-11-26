@@ -1280,6 +1280,30 @@ The following architectural workflow graphic shows the entire fleet of the `scyl
 ![entire-scylla-cluster-sync-workflow-vm-native](docs/Full-Service-Architecture-VM-Native.png)
 
 
+
+
+## Index Management (SSTableLoader Process Server)
+
+### With Secondary Indexes (recommended for 60+ indexes):
+```bash
+./sstable-loader --config config/sstable-loader.yaml \
+                 --indexes config/indexes.yaml \
+                 --auto-start
+```
+
+### Without Secondary Indexes:
+```bash
+./sstable-loader --config config/sstable-loader.yaml \
+                 --skip-indexes \
+                 --auto-start
+```
+
+### Empty indexes.yaml (also valid):
+```yaml
+# indexes.yaml - no indexes to manage
+[]
+```
+
 ## CassandraDB vs ScyllaDB Kubernetes Operator Cost Reduction
 
 The high-cognitive load of configuration and JVM overhead using the Cassandra DB and its deployment using the Cassandra DB Kubernetes Operator.
