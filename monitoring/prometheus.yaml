@@ -1,0 +1,28 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'dual-writer'
+    static_configs:
+      - targets: ['dual-writer:9090']
+
+  - job_name: 'sstable-loader'
+    static_configs:
+      - targets: ['sstable-loader:9092']
+
+  - job_name: 'dual-reader'
+    static_configs:
+      - targets: ['dual-reader:9091']
+
+  - job_name: 'scylla-source'
+    static_configs:
+      - targets: ['scylla-source:9180']
+
+  - job_name: 'scylla-target'
+    static_configs:
+      - targets: ['scylla-target:9180']

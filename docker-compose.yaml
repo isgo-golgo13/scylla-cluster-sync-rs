@@ -1,11 +1,11 @@
 version: '3.8'
 
 services:
-  # Source ScyllaDB cluster (simulates GCP)
+  # Source ScyllaDB cluster (simulates GCP/Cassandra)
   scylla-source:
     image: scylladb/scylla:6.1
     container_name: scylla-source
-    command: --smp 2 --memory 2G --overprovisioned 1
+    command: --smp 2 --memory 2G --overprovisioned 1 --developer-mode 1
     ports:
       - "9042:9042"
     networks:
@@ -16,13 +16,14 @@ services:
       test: ["CMD", "cqlsh", "-e", "describe keyspaces"]
       interval: 30s
       timeout: 10s
-      retries: 5
+      retries: 10
+      start_period: 60s
 
   # Target ScyllaDB cluster (simulates AWS)
   scylla-target:
     image: scylladb/scylla:6.1
     container_name: scylla-target
-    command: --smp 2 --memory 2G --overprovisioned 1
+    command: --smp 2 --memory 2G --overprovisioned 1 --developer-mode 1
     ports:
       - "9043:9042"
     networks:
@@ -33,43 +34,21 @@ services:
       test: ["CMD", "cqlsh", "-e", "describe keyspaces"]
       interval: 30s
       timeout: 10s
-      retries: 5
+      retries: 10
+      start_period: 60s
 
   # Dual-Writer service
   dual-writer:
     build:
       context: .
-      dockerfile: services/dual-writer/Dockerfile
+      dockerfile: services/dual-writer/Dockerfile.dual-writer
     container_name: dual-writer
     ports:
-      - "8080:8080"  # HTTP API
-      - "9090:9090"  # Prometheus metrics
+      - "8080:8080"
+      - "9090:9090"
     environment:
-      - DUAL_WRITER_CONFIG=/config/dual-writer.yaml
-      - RUST_LOG=dual_writer=info
-    volumes:
-      - ./config:/config:ro
-    networks:
-      - scylla-net
-    depends_on:
-      scylla-source:
-        condition: service_healthy
-      scylla-target:
-        condition: service_healthy
-    restart: unless-stopped
-
-  # Dual-Reader service
-  dual-reader:
-    build:
-      context: .
-      dockerfile: services/dual-reader/Dockerfile
-    container_name: dual-reader
-    ports:
-      - "8082:8082"  # HTTP API
-      - "9091:9091"  # Prometheus metrics
-    environment:
-      - DUAL_READER_CONFIG=/config/dual-reader.yaml
-      - RUST_LOG=dual_reader=info
+      - RUST_LOG=dual_writer=info,svckit=info
+      - RUST_BACKTRACE=1
     volumes:
       - ./config:/config:ro
     networks:
@@ -85,14 +64,14 @@ services:
   sstable-loader:
     build:
       context: .
-      dockerfile: services/sstable-loader/Dockerfile
+      dockerfile: services/sstable-loader/Dockerfile.sstable-loader
     container_name: sstable-loader
     ports:
-      - "8081:8081"  # HTTP API
-      - "9092:9092"  # Prometheus metrics
+      - "8081:8081"
+      - "9092:9092"
     environment:
-      - SSTABLE_LOADER_CONFIG=/config/sstable-loader.yaml
-      - RUST_LOG=sstable_loader=info
+      - RUST_LOG=sstable_loader=info,svckit=info
+      - RUST_BACKTRACE=1
     volumes:
       - ./config:/config:ro
       - sstable-loader-checkpoints:/checkpoints
@@ -105,9 +84,32 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # Prometheus for metrics
+  # Dual-Reader service
+  dual-reader:
+    build:
+      context: .
+      dockerfile: services/dual-reader/Dockerfile.dual-reader
+    container_name: dual-reader
+    ports:
+      - "8082:8082"
+      - "9091:9091"
+    environment:
+      - RUST_LOG=dual_reader=info,svckit=info
+      - RUST_BACKTRACE=1
+    volumes:
+      - ./config:/config:ro
+    networks:
+      - scylla-net
+    depends_on:
+      scylla-source:
+        condition: service_healthy
+      scylla-target:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Prometheus
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.47.0
     container_name: prometheus
     ports:
       - "9093:9090"
@@ -117,13 +119,14 @@ services:
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
     networks:
       - scylla-net
     restart: unless-stopped
 
-  # Grafana for visualization
+  # Grafana
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:10.1.0
     container_name: grafana
     ports:
       - "3000:3000"
