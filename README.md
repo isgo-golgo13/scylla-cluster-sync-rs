@@ -1364,9 +1364,9 @@ let session = cluster.connect("engine-vector");
 
 
 
-```shell
-# Changes with ScyllaDB Operator on EKS:
+# Changes with ScyllaDB Operator on EKS
 
+```shell
 Cassandra on EKS:
 - Memory: 32GB (8GB heap + 24GB off-heap)
 - GC Pauses: 200-800ms (G1GC)
@@ -1387,6 +1387,7 @@ ScyllaDB on EKS:
 
 ```shell
 scylla-cluster-sync-rs
+├── Cargo.lock
 ├── Cargo.toml
 ├── LICENSE
 ├── Makefile
@@ -1394,11 +1395,19 @@ scylla-cluster-sync-rs
 ├── README.md
 ├── config
 │   ├── dual-reader.yaml
-│   ├── dual-writer.yaml
+│   ├── dual-writer-cassandra.yaml
+│   ├── dual-writer-scylla.yaml
+│   ├── filter-rules,yaml
+│   ├── indexes.yaml
 │   └── sstable-loader.yaml
 ├── docker-compose.yaml
 ├── docs
-│   └── Dual-Writer-Data-Synch-Architecture.png
+├── monitoring
+│   ├── grafana
+│   │   └── provisioning
+│   │       └── datasources
+│   │           └── prometheus.yaml
+│   └── prometheus.yaml
 ├── services
 │   ├── dual-reader
 │   │   ├── Cargo.toml
@@ -1418,6 +1427,7 @@ scylla-cluster-sync-rs
 │   │   └── src
 │   │       ├── api.rs
 │   │       ├── config.rs
+│   │       ├── filter.rs
 │   │       ├── health.rs
 │   │       ├── main.rs
 │   │       └── writer.rs
@@ -1428,6 +1438,7 @@ scylla-cluster-sync-rs
 │       └── src
 │           ├── api.rs
 │           ├── config.rs
+│           ├── index_manager.rs
 │           ├── loader.rs
 │           ├── main.rs
 │           └── token_range.rs
@@ -1437,7 +1448,7 @@ scylla-cluster-sync-rs
         ├── config.rs
         ├── database
         │   ├── cassandra.rs
-        │   ├── connection.rs
+        │   ├── factory.rs
         │   ├── mod.rs
         │   ├── query_builder.rs
         │   ├── retry.rs
