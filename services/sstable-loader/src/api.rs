@@ -66,7 +66,7 @@ pub async fn start_server(
     loader: Arc<SSTableLoader>,
     index_manager: Option<Arc<IndexManager>>,
     port: u16,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     let state = AppState {
         loader,
         index_manager,
@@ -119,7 +119,7 @@ async fn health_check(State(state): State<AppState>) -> Json<HealthResponse> {
 
 /// GET /status - Migration status
 async fn migration_status(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let stats = state.loader.get_stats();
+    let stats = state.loader.get_stats().await;
     Json(serde_json::json!({
         "status": "ok",
         "migration": stats,
