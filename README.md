@@ -1304,6 +1304,7 @@ The following architectural workflow graphic shows the entire fleet of the `scyl
 []
 ```
 
+
 ## CassandraDB vs ScyllaDB Kubernetes Operator Cost Reduction
 
 The high-cognitive load of configuration and JVM overhead using the Cassandra DB and its deployment using the Cassandra DB Kubernetes Operator.
