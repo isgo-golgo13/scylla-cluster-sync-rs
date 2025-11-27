@@ -8,6 +8,8 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{info, error};
