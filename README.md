@@ -1794,7 +1794,46 @@ aws secretsmanager create-secret \
   --secret-string '{"username":"scylla","password":"xxx"}'
 ```
 
+---
 
+### Phase 1: Deploy sstable-loader (AWS EKS)
+
+**Duration:** 30 minutes  
+**Risk Level:** Low (no production impact yet)
+
+Deploy the bulk migration service on the **target side** first. It will sit idle until triggered.
+```shell
+# Switch to EKS context
+kubectl config use-context eks-prod
+
+# Deploy sstable-loader only
+helm install sstable-loader ./config/deploy/scylla-cluster-sync \
+  --namespace migration \
+  --set dualWriter.enabled=false \
+  --set dualReader.enabled=false \
+  --set sstableLoader.enabled=true \
+  -f values-production.yaml
+
+# Verify deployment
+kubectl -n migration get pods -l app.kubernetes.io/component=sstable-loader
+kubectl -n migration logs -l app.kubernetes.io/component=sstable-loader -f
+
+# Test health endpoint
+kubectl -n migration port-forward svc/sstable-loader 8081:8081 &
+curl http://localhost:8081/health
+```
+
+**Expected output:**
+```json
+{
+  "status": "healthy",
+  "service": "sstable-loader",
+  "index_manager_enabled": true,
+  "index_count": 60
+}
+```
+
+---
 
 
 
