@@ -1783,6 +1783,7 @@ spec:
 kubectl apply -f aws-secrets-store-cassandra.yaml 
 ```
 
+```shell
 # 4. Seed database credentials in AWS Secrets Manager
 aws secretsmanager create-secret \
   --name production/iconik/cassandra-credentials \
@@ -1793,7 +1794,7 @@ aws secretsmanager create-secret \
   --secret-string '{"username":"scylla","password":"xxx"}'
 ```
 
----
+
 
 
 
