@@ -1745,7 +1745,55 @@ The following sequence diagram shows the worklow of the three `scylla-cluster-sy
 └─────────┘     └────────────┘     └───────────┘     └─────────────┘     └──────────┘
 ```
 
+## Deployment Order (Chronological)
 
+### Phase 0: Pre-Migration Setup
+
+**Duration:** 1-2 days  
+**Risk Level:** Low
+```bash
+# 1. Create namespaces
+kubectl --context=gke-prod create namespace migration
+kubectl --context=eks-prod create namespace migration
+
+# 2. Deploy External Secrets Operator (if not present)
+helm repo add external-secrets https://charts.external-secrets.io
+helm install external-secrets external-secrets/external-secrets \
+  --namespace external-secrets --create-namespace
+
+# 3. Deploy ESO ClusterSecretStore CRD and Configuration with AWS SecretsManager
+```yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ClusterSecretStore
+metadata:
+  name: aws-secrets-manager
+spec:
+  provider:
+    aws:
+      service: SecretsManager
+      region: us-east-1
+      auth:
+        jwt:
+          serviceAccountRef:
+            name: external-secrets
+            namespace: external-secrets
+```
+
+```shell 
+kubectl apply -f aws-secrets-store-cassandra.yaml 
+```
+
+# 4. Seed database credentials in AWS Secrets Manager
+aws secretsmanager create-secret \
+  --name production/iconik/cassandra-credentials \
+  --secret-string '{"username":"cassandra","password":"xxx"}'
+
+aws secretsmanager create-secret \
+  --name production/iconik/scylla-credentials \
+  --secret-string '{"username":"scylla","password":"xxx"}'
+```
+
+---
 
 
 
