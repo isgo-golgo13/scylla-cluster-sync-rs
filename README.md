@@ -1693,7 +1693,57 @@ helm template migration ./config/deploy/scylla-cluster-sync \
 ```
 
 
+## Scylla Cluster Sync Sequence Diagram (No AWS DataSync Services)
 
+The following sequence diagram shows the worklow of the three `scylla-cluster-sync-rs` services during the ScyllaDB/CassandraDB source to cross-cloud  ScyllaDB/CassandraDB target. 
+
+```
+┌─────────┐     ┌────────────┐     ┌───────────┐     ┌─────────────┐     ┌──────────┐
+│   App   │     │dual-writer │     │ Cassandra │     │sstable-load │     │ ScyllaDB │
+└────┬────┘     └─────┬──────┘     └─────┬─────┘     └──────┬──────┘     └────┬─────┘
+     │                │                  │                  │                 │
+     │ ═══════════════════════════ Phase 1: SourceOnly ══════════════════════════
+     │                │                  │                  │                 │
+     │──Write Req────▶│                  │                  │                 │
+     │                │───Execute CQL───▶│                  │                 │
+     │                │◀──────OK─────────│                  │                 │
+     │◀───Response────│                  │                  │                 │
+     │                │                  │                  │                 │
+     │ ═══════════════════════════ Phase 2: DualAsync ═══════════════════════════
+     │                │                  │                  │                 │
+     │──Write Req────▶│                  │                  │                 │
+     │                │───Execute CQL───▶│                  │                 │
+     │                │◀──────OK─────────│                  │                 │
+     │◀───Response────│                  │                  │                 │
+     │                │                  │                  │                 │
+     │                │════════════Shadow Write (async)════════════════════▶│
+     │                │                  │                  │                 │
+     │                │                  │                  │                 │
+     │                │                  │◀═══Bulk Read════│                 │
+     │                │                  │═══════════════▶│                 │
+     │                │                  │                  │───Insert Batch─▶│
+     │                │                  │                  │◀──────OK────────│
+     │                │                  │                  │                 │
+     │ ═══════════════════════════ Phase 3: DualSync ════════════════════════════
+     │                │                  │                  │                 │
+     │──Write Req────▶│                  │                  │                 │
+     │                │───Execute CQL───▶│                  │                 │
+     │                │══════════════Execute CQL══════════════════════════▶│
+     │                │◀──────OK─────────│                  │                 │
+     │                │◀════════════════════════OK═════════════════════════│
+     │◀───Response────│                  │                  │                 │
+     │                │                  │                  │                 │
+     │ ═══════════════════════════ Phase 4: TargetOnly ══════════════════════════
+     │                │                  │                  │                 │
+     │──Write Req────▶│                  │                  │                 │
+     │                │══════════════Execute CQL══════════════════════════▶│
+     │                │◀════════════════════════OK═════════════════════════│
+     │◀───Response────│                  │                  │                 │
+     │                │                  │                  │                 │
+┌────┴────┐     ┌─────┴──────┐     ┌─────┴─────┐     ┌──────┴──────┐     ┌────┴─────┐
+│   App   │     │dual-writer │     │ Cassandra │     │sstable-load │     │ ScyllaDB │
+└─────────┘     └────────────┘     └───────────┘     └─────────────┘     └──────────┘
+```
 
 
 
