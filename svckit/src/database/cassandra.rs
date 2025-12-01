@@ -16,7 +16,7 @@ use crate::errors::SyncError;
 /// Cassandra client template
 /// 
 /// Currently, all Cassandra connections go through ScyllaConnection
-/// via the DatabaseFactory, since the scylla crate is CQL-compatible
+/// through the DatabaseFactory, since the scylla crate is CQL-compatible
 /// with Cassandra 4.x.
 /// 
 /// This struct exists for:
