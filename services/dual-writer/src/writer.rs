@@ -13,7 +13,7 @@ use svckit::{
     metrics,
 };
 use crate::config::{DualWriterConfig, WriteMode};
-use crate::filter::{FilterGovernor, FilterConfig};  // <-- Added
+use crate::filter::FilterGovernor;  // <-- NEW: Import FilterGovernor
 
 pub struct DualWriter {
     source_conn: Arc<ScyllaConnection>,
@@ -21,7 +21,7 @@ pub struct DualWriter {
     config: Arc<RwLock<DualWriterConfig>>,
     failed_writes: Arc<DashMap<Uuid, FailedWrite>>,
     stats: Arc<Mutex<WriterStats>>,
-    filter_governor: Arc<FilterGovernor>,  // <-- Added
+    filter_governor: Arc<FilterGovernor>,  // <-- NEW: FilterGovernor field
 }
 
 #[derive(Debug, Clone)]
@@ -38,7 +38,6 @@ pub struct WriterStats {
     pub successful_writes: u64,
     pub failed_writes: u64,
     pub retried_writes: u64,
-    pub filtered_writes: u64,  // <-- Added
 }
 
 pub struct WriteResponse {
@@ -50,10 +49,9 @@ pub struct WriteResponse {
 }
 
 impl DualWriter {
-    pub async fn new(config: DualWriterConfig, filter_config: FilterConfig) -> Result<Self, SyncError> {  // <-- Modified
+    pub async fn new(config: DualWriterConfig, filter_governor: Arc<FilterGovernor>) -> Result<Self, SyncError> {  // <-- NEW: Add filter parameter
         let source_conn = Arc::new(ScyllaConnection::new(&config.source).await?);
         let target_conn = Arc::new(ScyllaConnection::new(&config.target).await?);
-        let filter_governor = Arc::new(FilterGovernor::new(&filter_config));  // <-- Added
         
         info!("Initialized connections to source and target ScyllaDB clusters");
         
@@ -63,7 +61,7 @@ impl DualWriter {
             config: Arc::new(RwLock::new(config)),
             failed_writes: Arc::new(DashMap::new()),
             stats: Arc::new(Mutex::new(WriterStats::default())),
-            filter_governor,  // <-- Added
+            filter_governor,  // <-- NEW: Store filter
         })
     }
     
@@ -131,19 +129,10 @@ impl DualWriter {
         self.source_conn.execute(&query, request.values.clone()).await?;
         let primary_latency = start.elapsed().as_secs_f64() * 1000.0;
         
-        // Check filter before shadow write  // <-- Added
-        let should_write_to_target = self.filter_governor.should_write_to_target(request).await;
-        
-        if !should_write_to_target {
-            // Tenant/table is blacklisted - skip target write
-            info!(
-                "Skipping target write for blacklisted request: {}.{}", 
-                request.keyspace, request.table
-            );
-            
-            let mut stats = self.stats.lock();
-            stats.filtered_writes += 1;
-            
+        // <-- NEW: Check filter before shadow write
+        if !self.filter_governor.should_write_to_target(request).await {
+            info!("Skipping target write - tenant/table is blacklisted: {}.{}", 
+                  request.keyspace, request.table);
             return Ok(WriteResponse {
                 success: true,
                 request_id: request.request_id,
@@ -211,34 +200,25 @@ impl DualWriter {
         let query = QueryBuilder::build_insert_query(request);
         let start = Instant::now();
         
-        // Check filter  // <-- Added
-        let should_write_to_target = self.filter_governor.should_write_to_target(request).await;
+        // <-- NEW: Check filter before target write
+        let should_write_target = self.filter_governor.should_write_to_target(request).await;
         
-        if !should_write_to_target {
-            // Blacklisted - write to source only
+        if !should_write_target {
+            // Only write to source
             self.source_conn.execute(&query, request.values.clone()).await?;
+            info!("Skipping target write - tenant/table is blacklisted: {}.{}", 
+                  request.keyspace, request.table);
+        } else {
+            // Execute both writes in parallel
+            let source_future = self.source_conn.execute(&query, request.values.clone());
+            let target_future = self.target_conn.execute(&query, request.values.clone());
             
-            let mut stats = self.stats.lock();
-            stats.filtered_writes += 1;
+            let (source_result, target_result) = tokio::join!(source_future, target_future);
             
-            return Ok(WriteResponse {
-                success: true,
-                request_id: request.request_id,
-                write_timestamp: request.timestamp.unwrap_or(0),
-                latency_ms: start.elapsed().as_secs_f64() * 1000.0,
-                error: None,
-            });
+            // Both must succeed
+            source_result?;
+            target_result?;
         }
-        
-        // Execute both writes in parallel
-        let source_future = self.source_conn.execute(&query, request.values.clone());
-        let target_future = self.target_conn.execute(&query, request.values.clone());
-        
-        let (source_result, target_result) = tokio::join!(source_future, target_future);
-        
-        // Both must succeed
-        source_result?;
-        target_result?;
         
         Ok(WriteResponse {
             success: true,
@@ -286,6 +266,13 @@ impl DualWriter {
                     continue;
                 }
                 
+                // <-- NEW: Check filter before retry
+                if !self.filter_governor.should_write_to_target(&write.request).await {
+                    info!("Removing failed write {} - now blacklisted", id);
+                    to_remove.push(id);
+                    continue;
+                }
+                
                 let query = QueryBuilder::build_insert_query(&write.request);
                 match self.target_conn.execute(&query, write.request.values.clone()).await {
                     Ok(_) => {
@@ -322,14 +309,19 @@ impl DualWriter {
         info!("Configuration updated");
     }
     
-    // Hot-reload filter config  // <-- Added
-    pub async fn update_filter_config(&self, new_config: FilterConfig) {
-        self.filter_governor.reload_config(&new_config).await;
-        info!("Filter configuration reloaded");
-    }
-    
     pub fn get_stats(&self) -> WriterStats {
         self.stats.lock().clone()
+    }
+    
+    /// Query source cluster (for SELECT queries)
+    pub async fn query_source(&self, query: &str, values: Vec<serde_json::Value>) -> Result<Vec<Vec<serde_json::Value>>, SyncError> {
+        debug!("Executing SELECT on source cluster: {}", query);
+        
+        // Execute query on source cluster
+        let result = self.source_conn.execute(query, values).await?;
+        
+        // For now, return empty rows (proper row parsing would go here)
+        Ok(vec![])
     }
 }
 

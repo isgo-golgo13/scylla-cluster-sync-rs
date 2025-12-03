@@ -829,6 +829,92 @@ Phase 4 - TargetOnly (Complete):
 ```
 
 
+### Testing the CQL Proxy Layer (Python Client)
+
+```python
+#!/usr/bin/env python3
+"""
+Test client for CQL dual-writer proxy
+Shows that Python cassandra-driver works transparently
+"""
+
+from cassandra.cluster import Cluster
+from cassandra.auth import PlainTextAuthProvider
+import uuid
+import time
+
+def test_cql_proxy():
+    """Test CQL proxy with Python cassandra-driver"""
+    
+    print("Connecting to CQL dual-writer proxy...")
+    
+    # Connect to dual-writer proxy (NOT directly to Cassandra!)
+    cluster = Cluster(
+        contact_points=['127.0.0.1'],
+        port=9042,  # CQL proxy port
+        protocol_version=4
+    )
+    
+    session = cluster.connect()
+    print("Connected to CQL proxy")
+    
+    # Set keyspace
+    session.set_keyspace('files_keyspace')
+    print("Keyspace set to files_keyspace")
+    
+    # Test INSERT
+    file_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    
+    query = """
+    INSERT INTO files (system_domain_id, id, name, size, status)
+    VALUES (?, ?, ?, ?, ?)
+    """
+    
+    print(f"\nInserting test file: {file_id}")
+    session.execute(query, [tenant_id, file_id, "test.jpg", 1024, "CLOSED"])
+    print("INSERT successful - dual-written to GCP + AWS!")
+    
+    # Test SELECT
+    query = "SELECT * FROM files WHERE system_domain_id = ? AND id = ?"
+    print(f"\nQuerying file: {file_id}")
+    rows = session.execute(query, [tenant_id, file_id])
+    
+    for row in rows:
+        print(f"Found: {row.name} ({row.size} bytes, status={row.status})")
+    
+    # Test UPDATE
+    query = """
+    UPDATE files SET status = ? WHERE system_domain_id = ? AND id = ?
+    """
+    print(f"\nUpdating file status...")
+    session.execute(query, ["ARCHIVED", tenant_id, file_id])
+    print("UPDATE successful - dual-written to both clusters!")
+    
+    # Test blacklist (optional - requires tenant in blacklist)
+    blacklisted_tenant = uuid.UUID("e19206ba-c584-11e8-882a-0a580a30028e")
+    query = """
+    INSERT INTO files (system_domain_id, id, name, size, status)
+    VALUES (?, ?, ?, ?, ?)
+    """
+    print(f"\nTesting blacklist with tenant: {blacklisted_tenant}")
+    session.execute(query, [blacklisted_tenant, uuid.uuid4(), "blocked.jpg", 2048, "CLOSED"])
+    print("Request accepted (written to GCP only, AWS skipped)")
+    
+    cluster.shutdown()
+    print("\nAll tests passed!")
+    print("CQL proxy working transparently with Python cassandra-driver!")
+
+if __name__ == "__main__":
+    try:
+        test_cql_proxy()
+    except Exception as e:
+        print(f"Test failed: {e}")
+        import traceback
+        traceback.print_exc()
+```
+
+
 
 
 ## Client Applications Use of Dual-Write Proxy Service

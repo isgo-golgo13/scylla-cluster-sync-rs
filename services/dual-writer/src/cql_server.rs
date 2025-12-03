@@ -240,29 +240,62 @@ async fn handle_query(header: &FrameHeader, body: &[u8], writer: &Arc<DualWriter
     
     debug!("QUERY: {}", query);
     
-    // Extract keyspace.table from query
-    let (keyspace, table) = extract_keyspace_table(&query)?;
+    // Check if this is a SELECT (read) or write operation
+    let query_upper = query.trim().to_uppercase();
+    let is_select = query_upper.starts_with("SELECT");
+    let is_write = query_upper.starts_with("INSERT") 
+                || query_upper.starts_with("UPDATE") 
+                || query_upper.starts_with("DELETE");
     
-    // Build WriteRequest
-    let request = WriteRequest {
-        keyspace: keyspace.to_string(),
-        table: table.to_string(),
-        query: query.clone(),
-        values,
-        consistency: None,
-        request_id: Uuid::new_v4(),
-        timestamp: None,
-    };
-    
-    // Execute dual-write
-    match writer.write(request).await {
-        Ok(_) => {
-            // Return VOID result
-            build_void_result(header.stream_id)
+    if is_select {
+        // SELECT: Route to source cluster only (reads don't need dual-write)
+        debug!("SELECT query - routing to source cluster");
+        match writer.query_source(&query, values).await {
+            Ok(rows) => {
+                // Return ROWS result
+                build_rows_result(header.stream_id, rows)
+            }
+            Err(e) => {
+                error!("SELECT failed: {}", e);
+                build_error_frame(header.stream_id, &format!("SELECT failed: {}", e))
+            }
         }
-        Err(e) => {
-            error!("Write failed: {}", e);
-            build_error_frame(header.stream_id, &format!("Write failed: {}", e))
+    } else if is_write {
+        // INSERT/UPDATE/DELETE: Dual-write to both clusters
+        debug!("Write query - dual-writing to both clusters");
+        
+        let (keyspace, table) = extract_keyspace_table(&query)?;
+        
+        let request = WriteRequest {
+            keyspace: keyspace.to_string(),
+            table: table.to_string(),
+            query: query.clone(),
+            values,
+            consistency: None,
+            request_id: Uuid::new_v4(),
+            timestamp: None,
+        };
+        
+        match writer.write(request).await {
+            Ok(_) => {
+                build_void_result(header.stream_id)
+            }
+            Err(e) => {
+                error!("Write failed: {}", e);
+                build_error_frame(header.stream_id, &format!("Write failed: {}", e))
+            }
+        }
+    } else {
+        // Other queries (USE, CREATE, etc.) - route to source
+        debug!("DDL/Other query - routing to source cluster");
+        match writer.query_source(&query, values).await {
+            Ok(_) => {
+                build_void_result(header.stream_id)
+            }
+            Err(e) => {
+                error!("Query failed: {}", e);
+                build_error_frame(header.stream_id, &format!("Query failed: {}", e))
+            }
         }
     }
 }
@@ -401,6 +434,40 @@ fn parse_qualified_name(name: &str) -> Result<(&str, &str)> {
 fn build_void_result(stream_id: i16) -> Result<Vec<u8>> {
     let mut body = Vec::new();
     body.extend_from_slice(&(ResultKind::Void as i32).to_be_bytes());
+    
+    let header = FrameHeader::new(Opcode::Result, stream_id, body.len() as i32);
+    
+    let mut response = header.to_bytes().to_vec();
+    response.extend_from_slice(&body);
+    Ok(response)
+}
+
+fn build_rows_result(stream_id: i16, rows: Vec<Vec<serde_json::Value>>) -> Result<Vec<u8>> {
+    let mut body = Vec::new();
+    
+    // Result kind: ROWS
+    body.extend_from_slice(&(ResultKind::Rows as i32).to_be_bytes());
+    
+    // Flags (no metadata for now - simplified)
+    body.extend_from_slice(&(0x0001i32).to_be_bytes()); // NO_METADATA flag
+    
+    // Column count (we'll use 0 for simplified response)
+    body.extend_from_slice(&(0i32).to_be_bytes());
+    
+    // Row count
+    body.extend_from_slice(&(rows.len() as i32).to_be_bytes());
+    
+    // Row data (simplified - would need proper encoding in production)
+    for row in rows {
+        for value in row {
+            let value_str = serde_json::to_string(&value)?;
+            let value_bytes = value_str.as_bytes();
+            
+            // Value length
+            body.extend_from_slice(&(value_bytes.len() as i32).to_be_bytes());
+            body.extend_from_slice(value_bytes);
+        }
+    }
     
     let header = FrameHeader::new(Opcode::Result, stream_id, body.len() as i32);
     
