@@ -1067,9 +1067,21 @@ scylla-cluster-sync-rs
 ├── Cargo.toml
 ├── LICENSE
 ├── Makefile
-├── README-DW-SSTLoader-Processor-DR.md
 ├── README.md
 ├── config
+│   ├── deploy
+│   │   └── scylla-cluster-sync
+│   │       ├── Chart.yaml
+│   │       ├── templates
+│   │       │   ├── __helpers.tpl
+│   │       │   ├── app-config.yaml
+│   │       │   ├── app-gateway.yaml
+│   │       │   ├── app-monitoring.yaml
+│   │       │   ├── app-scaling.yaml
+│   │       │   ├── app-secrets.yaml
+│   │       │   └── app.yaml
+│   │       ├── values-production.yaml
+│   │       └── values.yaml
 │   ├── dual-reader.yaml
 │   ├── dual-writer-cassandra.yaml
 │   ├── dual-writer-scylla.yaml
@@ -1101,8 +1113,8 @@ scylla-cluster-sync-rs
 │   │   ├── Dockerfile.dual-writer
 │   │   ├── Makefile
 │   │   └── src
-│   │       ├── api.rs
 │   │       ├── config.rs
+│   │       ├── cql_server.rs
 │   │       ├── filter.rs
 │   │       ├── health.rs
 │   │       ├── main.rs
