@@ -1,46 +1,38 @@
-FROM rust:1.83-slim AS builder
-
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
+FROM rust:1.75 as builder
 
 WORKDIR /app
 
+# Copy workspace files
 COPY Cargo.toml Cargo.lock ./
-COPY svckit/ ./svckit/
-COPY services/dual-writer/ ./services/dual-writer/
+COPY svckit ./svckit
+COPY services/dual-writer ./services/dual-writer
 
-RUN mkdir -p services/dual-reader/src services/sstable-loader/src && \
-    echo "fn main() {}" > services/dual-reader/src/main.rs && \
-    echo "fn main() {}" > services/sstable-loader/src/main.rs
-
-COPY services/dual-reader/Cargo.toml ./services/dual-reader/
-COPY services/sstable-loader/Cargo.toml ./services/sstable-loader/
-
+# Build release binary
 RUN cargo build --release --bin dual-writer
 
+# Runtime image
 FROM debian:bookworm-slim
 
+# Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
-    libssl3 \
-    curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN useradd -m -u 1000 appuser
-
+# Copy binary
 COPY --from=builder /app/target/release/dual-writer /usr/local/bin/dual-writer
 
-RUN chmod +x /usr/local/bin/dual-writer && \
-    chown appuser:appuser /usr/local/bin/dual-writer
+# Create config directory
+RUN mkdir -p /etc/config
 
-USER appuser
+# Expose CQL protocol port
+EXPOSE 9042
 
-EXPOSE 9042  # ← CQL protocol port
+# Run as non-root
+RUN useradd -m -u 1000 dual-writer
+USER dual-writer
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
-
-ENTRYPOINT ["dual-writer"]
-CMD ["dual-writer", "--bind-addr", "0.0.0.0:9042", "--config", "/etc/config/config.yaml"]
+# Start CQL proxy
+CMD ["dual-writer", \
+     "--bind-addr", "0.0.0.0:9042", \
+     "--config", "/etc/config/config.yaml", \
+     "--filter-config", "/etc/config/filter-rules.yaml"]
