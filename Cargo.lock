@@ -778,6 +778,7 @@ dependencies = [
  "async-trait",
  "axum",
  "clap",
+ "config",
  "dashmap 6.1.0",
  "parking_lot",
  "serde",

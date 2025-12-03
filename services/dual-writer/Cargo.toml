@@ -33,6 +33,8 @@ clap = { version = "4.5", features = ["derive"] }
 uuid = { version = "1.10", features = ["v4", "serde"] }
 anyhow = "1.0"
 
+config = "0.14"
+
 # NOTE: We do NOT need cassandra-protocol crate!
 # We implemented CQL protocol parsing manually to avoid external dependencies
 # and ensure production-grade control over the protocol layer
