@@ -1295,7 +1295,44 @@ helm template migration ./config/deploy/scylla-cluster-sync \
 ```
 
 
-## Scylla Cluster Sync Sequence Diagram (No AWS DataSync Services)
+## Scylla/Cassandra Cluster Sync Architectural Layout 
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  GCP (Source)                                               │
+├─────────────────────────────────────────────────────────────┤
+│  • 3x GCP Compute VMs (Cassandra 4.x, self-managed)         │
+│    - NO Kubernetes                                          │
+│    - Manual install (no IaC)                                │
+│    - RF=2                                                   │
+│  • dual-writer service (GKE, 3 replicas)                    │
+│    - Port 9042 (CQL proxy)                                  │
+│    - Python app connects here                               │
+│  • Local disk: /var/lib/cassandra/data                      │
+│  • DataSync agent (maybe - client decides Monday)           │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            │ AWS DataSync OR aws s3 sync
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│  AWS (Target)                                               │
+├─────────────────────────────────────────────────────────────┤
+│  • S3 bucket: iconik-migration-sstables                     │
+│  • 3x EC2 instances (Cassandra 4.x, self-managed)           │
+│    - NO Kubernetes                                          │
+│    - Manual install (no IaC)                                │
+│    - RF=3                                                   │
+│  • sstable-loader service (EKS, 3 replicas)                 │
+│    - Reads from S3                                          │
+│    - Imports to AWS Cassandra                               │
+│  • dual-reader service (EKS, 3 replicas)                    │
+│    - Validates consistency                                  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+
+
+## Scylla/Cassandra Cluster Sync Sequence Diagram (No AWS DataSync Services)
 
 The following sequence diagram shows the worklow of the three `scylla-cluster-sync-rs` services during the ScyllaDB/CassandraDB source to cross-cloud  ScyllaDB/CassandraDB target. 
 
