@@ -39,7 +39,7 @@ dualWriter:
   
   service:
     type: ClusterIP
-    port: 8080
+    port: 9042
     metricsPort: 9090
   
   podAnnotations:

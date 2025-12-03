@@ -91,9 +91,10 @@ metadata:
 spec:
   type: {{ .Values.dualWriter.service.type }}
   ports:
-    - name: http
+    - name: cql
       port: {{ .Values.dualWriter.service.port }}
-      targetPort: http
+      targetPort: {{ .Values.dualWriter.service.port }}
+      protocol: TCP
     - name: metrics
       port: {{ .Values.dualWriter.service.metricsPort }}
       targetPort: metrics

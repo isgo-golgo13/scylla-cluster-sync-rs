@@ -37,10 +37,10 @@ RUN chmod +x /usr/local/bin/dual-writer && \
 
 USER appuser
 
-EXPOSE 8080 9090
+EXPOSE 9042  # ← CQL protocol port
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
 ENTRYPOINT ["dual-writer"]
-CMD ["--config", "/config/dual-writer.yaml", "--port", "8080"]
+CMD ["dual-writer", "--bind-addr", "0.0.0.0:9042", "--config", "/etc/config/config.yaml"]
