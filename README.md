@@ -1480,7 +1480,7 @@ curl http://localhost:8081/health
 
 The following is a list of future in the pipeline extensions to this service.
 
-- WASM (Rust) Real-Time Dual-Writer Proxy Progress and Statistics Tracker (UI Dashboard)
+- WASM Real-Time Dual-Writer Proxy Progress and Statistics Tracker
 
 ### WASM (Rust) Real-Time Dual-Writer Proxy Progress and Statistics Tracker (UI Dashboard) 
 
