@@ -1630,6 +1630,7 @@ ws://dual-writer.gke.internal:9090/metrics
 // Query system tables directly
 // SELECT * FROM system.metrics WHERE ...
 // Requires cross-cloud credentials (your "left eye / right eye")
+```
 
 
 **Recommendation is Option A** 
@@ -1640,6 +1641,20 @@ Have the dual-writer emit metrics throught the WebSocket. It already knows:
 - Target ack timing
 - Errors
 - Queue depth
+
+
+### Firecracker VMM Deployment Architecture 
+```shell
+# On-prem or dedicated host with network access to both clouds
+./firecracker-sync-dash/setup.sh
+
+# VM gets:
+# - VPN/tunnel to GCP VPC (dual-writer metrics)
+# - VPN/tunnel to AWS VPC (target Cassandra metrics)
+# - Static WASM binary (~2MB)
+# - 256MB RAM, 1 vCPU
+```
+
 
 
 ## References
