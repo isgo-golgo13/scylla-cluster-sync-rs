@@ -1634,7 +1634,7 @@ ws://dual-writer.gke.internal:9090/metrics
 
 
 **Recommendation is Option A** 
-Have the dual-writer emit metrics throught the WebSocket. It already knows:
+Have the dual-writer signal metrics throught the WebSocket. It already knows:
 
 - Every write that comes in
 - Source ack timing
