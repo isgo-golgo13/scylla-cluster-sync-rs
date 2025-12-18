@@ -1538,6 +1538,35 @@ Here is architecture for this using Rust, Rust Tokio Async and Leptos WASM Web T
 
 This added component will involve a new crate `sync-core` that uses the Strategy Pattern and involves the following code fragments.
 
+The WebSocket connections the Firecracker VMM uses across to GCP and AWS are **TLS** WebSockets. Here is this view on how that is used.
+
+```shell
+┌────────────────────────────────────────────────────────────────────────────┐
+│                     FIRECRACKER VMM (On-Prem/Neutral)                      │
+│                                                                            │
+│   scylla-sync-dash (WASM)                                                  │
+│         │                                                                  │
+│         ├──── wss://dual-writer.gke.internal:9443/metrics ──────┐          │
+│         │              (mTLS + JWT)                             │          │
+│         │                                                       │          │
+│         └──── wss://scylla-metrics.aws.internal:9443/metrics ───┼──┐       │
+│                        (mTLS + JWT)                             │  │       │
+└─────────────────────────────────────────────────────────────────┼──┼───────┘
+                                                                   │  │
+                          ┌────────────────────────────────────────┘  │
+                          │  WireGuard/IPSec VPN Tunnel               │
+                          │  or Cloud Interconnect                    │
+                          ▼                                           ▼
+              ┌───────────────────────┐               ┌───────────────────────┐
+              │        GCP VPC        │               │        AWS VPC        │
+              │  ┌─────────────────┐  │               │  ┌─────────────────┐  │
+              │  │  dual-writer    │  │               │  │  metrics-proxy  │  │
+              │  │  :9443 (TLS)    │  │               │  │  :9443 (TLS)    │  │
+              │  └─────────────────┘  │               │  └─────────────────┘  │
+              └───────────────────────┘               └───────────────────────┘
+```
+
+
 
 ```rust
 // crates/sync-core/src/lib.rs
