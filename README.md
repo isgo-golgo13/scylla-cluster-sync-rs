@@ -1482,6 +1482,8 @@ The following is a list of future in the pipeline extensions to this service.
 
 - WASM (Rust) Real-Time Dual-Writer Proxy Progress and Statistics Tracker (UI Dashboard)
 
+### WASM (Rust) Real-Time Dual-Writer Proxy Progress and Statistics Tracker (UI Dashboard) 
+
 Here is architecture for this using Rust, Rust Tokio Async and Leptos WASM Web Toolkit using SVG (D3.js equivalent style). This UI Dashboard will live on a coordinating (nuetral tier) Firecracker Hyper VMM. This Firecracker VMM can live on the following VMs.
 
 - AWS EC2 (Bare Metal Linux)
