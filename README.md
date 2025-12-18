@@ -1533,8 +1533,114 @@ Here is architecture for this using Rust, Rust Tokio Async and Leptos WASM Web T
 │  │  Source Cassandra │  │                          │                         │
 │  └───────────────────┘  │                          │                         │
 └─────────────────────────┘                          └─────────────────────────┘
-
 ```
+
+
+This added component will involve a new crate `sync-core` that uses the Strategy Pattern and involves the following code fragments.
+
+
+```rust
+// crates/sync-core/src/lib.rs
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WriteEvent {
+    pub id: Uuid,
+    pub timestamp: i64,
+    pub table: String,
+    pub partition_key: String,
+    pub size_bytes: u64,
+    pub source_ack_ms: Option<u32>,  // None = pending
+    pub target_ack_ms: Option<u32>,  // None = in-flight
+    pub status: WriteStatus,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum WriteStatus {
+    Pending,           // In dual-writer queue
+    SourceAcked,       // GCP Cassandra confirmed
+    TargetInFlight,    // Sent to AWS, awaiting ack
+    TargetAcked,       // AWS Cassandra confirmed
+    Failed(String),    // Error
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ClusterMetrics {
+    pub cloud: Cloud,
+    pub writes_per_sec: f64,
+    pub bytes_per_sec: u64,
+    pub p50_latency_ms: u32,
+    pub p99_latency_ms: u32,
+    pub error_rate: f64,
+    pub queue_depth: u32,
+    pub timestamp: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Cloud {
+    GCP,
+    AWS,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReplicationState {
+    pub lag_ms: i64,
+    pub in_flight_bytes: u64,
+    pub in_flight_writes: u32,
+    pub last_synced_timestamp: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Anomaly {
+    pub id: Uuid,
+    pub timestamp: i64,
+    pub anomaly_type: AnomalyType,
+    pub severity: Severity,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum AnomalyType {
+    LagSpike,
+    ErrorBurst,
+    ThroughputDrop,
+    ConnectionLost,
+    QueueBackpressure,
+}
+```
+
+The metrics collection strategy offers **two** solutions.
+
+### Option A: Embedded Metrics Exporter in Dual-Writer
+```rust
+// dual-writer exposes WebSocket
+// Dashboard connects directly
+ws://dual-writer.gke.internal:9090/metrics
+```
+
+
+### Option B: Prometheus + WebSocket Bridge
+```rust
+// Scrape Prometheus, push to dashboard through WS
+// - Higher decoupling 
+// - works with existing monitoring
+```
+
+### Option C: Direct Cassandra/Scylla Metrics
+```rust
+// Query system tables directly
+// SELECT * FROM system.metrics WHERE ...
+// Requires cross-cloud credentials (your "left eye / right eye")
+
+
+**Recommendation is Option A** 
+Have the dual-writer emit metrics throught the WebSocket. It already knows:
+
+- Every write that comes in
+- Source ack timing
+- Target ack timing
+- Errors
+- Queue depth
+
 
 ## References
 
