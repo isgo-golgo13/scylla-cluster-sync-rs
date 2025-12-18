@@ -1552,11 +1552,11 @@ The WebSocket connections the Firecracker VMM uses across to GCP and AWS are **T
 │         └──── wss://scylla-metrics.aws.internal:9443/metrics ───┼──┐       │
 │                        (mTLS + JWT)                             │  │       │
 └─────────────────────────────────────────────────────────────────┼──┼───────┘
-                                                                   │  │
-                          ┌────────────────────────────────────────┘  │
-                          │  WireGuard/IPSec VPN Tunnel               │
-                          │  or Cloud Interconnect                    │
-                          ▼                                           ▼
+                                                                  │  │
+                          ┌───────────────────────────────────────┘  │
+                          │  WireGuard/IPSec VPN Tunnel              │
+                          │  or Cloud Interconnect                   │
+                          ▼                                          ▼
               ┌───────────────────────┐               ┌───────────────────────┐
               │        GCP VPC        │               │        AWS VPC        │
               │  ┌─────────────────┐  │               │  ┌─────────────────┐  │
