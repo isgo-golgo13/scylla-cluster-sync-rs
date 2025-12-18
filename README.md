@@ -1617,7 +1617,6 @@ The metrics collection strategy offers **two** solutions.
 ws://dual-writer.gke.internal:9090/metrics
 ```
 
-
 ### Option B: Prometheus + WebSocket Bridge
 ```rust
 // Scrape Prometheus, push to dashboard through WS
@@ -1629,7 +1628,7 @@ ws://dual-writer.gke.internal:9090/metrics
 ```rust
 // Query system tables directly
 // SELECT * FROM system.metrics WHERE ...
-// Requires cross-cloud credentials (your "left eye / right eye")
+// Requires cross-cloud credentials (track "left-side source cloud / right-side target cloud")
 ```
 
 
