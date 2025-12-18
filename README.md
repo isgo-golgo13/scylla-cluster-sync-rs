@@ -1656,6 +1656,14 @@ Have the dual-writer signal metrics throught the WebSocket. It already knows:
 ```
 
 
+**Firecracker Advantages**
+
+- Sub-second boot (instant failover)
+- Small attack surface
+- Isolated from both cloud VPCs
+- Can run on any x86 Linux host
+
+
 
 ## References
 
