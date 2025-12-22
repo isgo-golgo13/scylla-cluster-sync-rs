@@ -1494,7 +1494,7 @@ Digest:    sha256:f5be0198051f6d6d49fe225576b80485ab92890d2d2232d9cd57b84e0b461f
 Manifests:
   Name:        docker.io/isgogolgo13/dual-writer:latest@sha256:a6697a354d9d0b6aa04f085140d301dd42d32e7b6154266a280172e494203d4f
   MediaType:   application/vnd.oci.image.manifest.v1+json
-  Platform:    linux/amd64
+  Platform:    linux/amd64      **<------- Linux AMD64**
 
   Name:        docker.io/isgogolgo13/dual-writer:latest@sha256:28de7fb4d96bd15182ad586400bb597ff7322ee332e4e51af53b762218915858
   MediaType:   application/vnd.oci.image.manifest.v1+json
@@ -1517,7 +1517,7 @@ Digest:    sha256:5f1571d1635edbcacdc4ac9abd0558758f1add9f4a7f6b8948c47442aaa6c6
 Manifests: 
   Name:        docker.io/isgogolgo13/dual-reader:latest@sha256:26a33a45f0ca1d9fc83aef20ab31902ac7805f562163b5ce6f81995b0485caef
   MediaType:   application/vnd.oci.image.manifest.v1+json
-  Platform:    linux/amd64
+  Platform:    linux/amd64       **<------- Linux AMD64**
                
   Name:        docker.io/isgogolgo13/dual-reader:latest@sha256:ca116e8ccd9ab1ccd7e30bd36373a14455c9cb685a4f73a0605dcefcf90fcf5f
   MediaType:   application/vnd.oci.image.manifest.v1+json
