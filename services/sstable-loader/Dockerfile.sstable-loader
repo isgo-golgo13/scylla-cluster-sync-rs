@@ -1,48 +1,32 @@
-FROM rust:1.83-slim AS builder
-
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
+# Build image
+FROM rust:1.83-bookworm AS builder
 
 WORKDIR /app
 
+# Copy workspace manifests
 COPY Cargo.toml Cargo.lock ./
-COPY svckit/ ./svckit/
-COPY services/sstable-loader/ ./services/sstable-loader/
 
-RUN mkdir -p services/dual-writer/src services/dual-reader/src && \
-    echo "fn main() {}" > services/dual-writer/src/main.rs && \
-    echo "fn main() {}" > services/dual-reader/src/main.rs
+# Copy shared library
+COPY svckit ./svckit
 
-COPY services/dual-writer/Cargo.toml ./services/dual-writer/
-COPY services/dual-reader/Cargo.toml ./services/dual-reader/
+# Copy ALL services (workspace requires all members)
+COPY services/dual-writer ./services/dual-writer
+COPY services/dual-reader ./services/dual-reader
+COPY services/sstable-loader ./services/sstable-loader
 
+# Build only the sstable-loader binary
 RUN cargo build --release --bin sstable-loader
 
+# Runtime image
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
-    libssl3 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN useradd -m -u 1000 appuser
-
-COPY --from=builder /app/target/release/sstable-loader /usr/local/bin/sstable-loader
-
-RUN chmod +x /usr/local/bin/sstable-loader && \
-    chown appuser:appuser /usr/local/bin/sstable-loader
-
-RUN mkdir -p /checkpoints && chown appuser:appuser /checkpoints
-
-USER appuser
+COPY --from=builder /app/target/release/sstable-loader /usr/local/bin/
 
 EXPOSE 8081 9092
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8081/health || exit 1
-
 ENTRYPOINT ["sstable-loader"]
-CMD ["--config", "/config/sstable-loader.yaml", "--port", "8081"]

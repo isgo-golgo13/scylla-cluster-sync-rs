@@ -1,38 +1,32 @@
-FROM rust:1.75 as builder
+# Build image
+FROM rust:1.83-bookworm AS builder
 
 WORKDIR /app
 
-# Copy workspace files
+# Copy workspace manifests
 COPY Cargo.toml Cargo.lock ./
-COPY svckit ./svckit
-COPY services/dual-writer ./services/dual-writer
 
-# Build release binary
+# Copy shared library
+COPY svckit ./svckit
+
+# Copy ALL services (workspace requires all members)
+COPY services/dual-writer ./services/dual-writer
+COPY services/dual-reader ./services/dual-reader
+COPY services/sstable-loader ./services/sstable-loader
+
+# Build only the dual-writer binary
 RUN cargo build --release --bin dual-writer
 
 # Runtime image
 FROM debian:bookworm-slim
 
-# Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy binary
-COPY --from=builder /app/target/release/dual-writer /usr/local/bin/dual-writer
+COPY --from=builder /app/target/release/dual-writer /usr/local/bin/
 
-# Create config directory
-RUN mkdir -p /etc/config
+EXPOSE 9042 9090
 
-# Expose CQL protocol port
-EXPOSE 9042
-
-# Run as non-root
-RUN useradd -m -u 1000 dual-writer
-USER dual-writer
-
-# Start CQL proxy
-CMD ["dual-writer", \
-     "--bind-addr", "0.0.0.0:9042", \
-     "--config", "/etc/config/config.yaml", \
-     "--filter-config", "/etc/config/filter-rules.yaml"]
+ENTRYPOINT ["dual-writer"]
