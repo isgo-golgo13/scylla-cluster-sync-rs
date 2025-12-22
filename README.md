@@ -1508,7 +1508,7 @@ Manifests:
 # dual-reader container image
 docker buildx imagetools inspect isgogolgo13/dual-reader:latest
 ```
-
+This outputs:
 ```shell
 Name:      docker.io/isgogolgo13/dual-reader:latest
 MediaType: application/vnd.oci.image.index.v1+json
@@ -1531,7 +1531,7 @@ Manifests:
 # sstable-loader container image
 docker buildx imagetools inspect isgogolgo13/sstable-loader:latest
 ```
-
+This outputs:
 ```shell
 Name:      docker.io/isgogolgo13/sstable-loader:latest
 MediaType: application/vnd.oci.image.index.v1+json
