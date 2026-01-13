@@ -2,7 +2,7 @@
 
 mod writer;
 mod config;
-mod cql_server;  // <-- NEW: CQL protocol server
+mod cql_server;
 mod filter;
 mod health;
 
@@ -23,7 +23,7 @@ struct Args {
     #[arg(short, long, default_value = "config.yaml")]
     config: String,
     
-    #[arg(long, default_value = "0.0.0.0:9042")]  // <-- CQL protocol port
+    #[arg(long, default_value = "0.0.0.0:9042")]
     bind_addr: String,
     
     #[arg(long, default_value = "config/filter-rules.yaml")]
@@ -54,8 +54,11 @@ async fn main() -> Result<()> {
     // Initialize dual writer with filter
     let writer = Arc::new(writer::DualWriter::new(config.clone(), filter_governor.clone()).await?);
     
+    // Get source address for CQL proxying
+    let source_addr = config.source_cql_addr();
+    
     info!("Dual-writer initialized");
-    info!("   Source: {:?}", config.source.hosts);
+    info!("   Source: {:?} (proxy to {})", config.source.hosts, source_addr);
     info!("   Target: {:?}", config.target.hosts);
     info!("   Mode: {:?}", config.writer.mode);
     
@@ -81,11 +84,12 @@ async fn main() -> Result<()> {
     let bind_addr: SocketAddr = args.bind_addr.parse()?;
     
     // Start CQL server
-    info!("🚀 Starting CQL server on {}", bind_addr);
+    info!("🚀 Starting CQL proxy server on {}", bind_addr);
+    info!("   Proxying reads to source: {}", source_addr);
+    info!("   Intercepting writes for dual-write");
     info!("   Python app can now connect with cassandra-driver");
-    info!("   Connection string: {}", bind_addr);
     
-    let cql_server = CqlServer::new(writer, bind_addr);
+    let cql_server = CqlServer::new(writer, bind_addr, source_addr);
     cql_server.start().await?;
     
     Ok(())

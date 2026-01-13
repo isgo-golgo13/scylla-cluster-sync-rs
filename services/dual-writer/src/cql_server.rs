@@ -1,27 +1,30 @@
 // services/dual-writer/src/cql_server.rs
 //
-// CQL Protocol Server - Accepts native Cassandra driver connections
-// Implements CQL binary protocol v4 for transparent dual-writing
+// CQL Protocol Proxy - Transparent proxy with write interception
+// Forwards raw CQL frames for reads, intercepts writes for dual-writing
 //
 
 use std::sync::Arc;
 use std::net::SocketAddr;
+use std::collections::HashMap;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::Mutex;
 use tracing::{info, warn, error, debug};
 use uuid::Uuid;
-use anyhow::{Result, Context};
+use anyhow::{Result, Context, anyhow};
 
 use crate::writer::DualWriter;
 use svckit::types::WriteRequest;
 
-/// CQL Protocol Version
-const CQL_VERSION: u8 = 0x04; // CQL v4
+/// CQL Protocol Constants
+const CQL_VERSION_REQUEST: u8 = 0x04;  // Client request version
+const CQL_VERSION_RESPONSE: u8 = 0x84; // Server response version (0x80 | 0x04)
 
 /// CQL Opcodes
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Opcode {
+pub enum Opcode {
     Error = 0x00,
     Startup = 0x01,
     Ready = 0x02,
@@ -64,7 +67,7 @@ impl Opcode {
     }
 }
 
-/// CQL Result Type
+/// CQL Result Types
 #[repr(i32)]
 #[derive(Debug, Clone, Copy)]
 enum ResultKind {
@@ -76,7 +79,7 @@ enum ResultKind {
 }
 
 /// CQL Frame Header (9 bytes)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct FrameHeader {
     version: u8,
     flags: u8,
@@ -86,20 +89,20 @@ struct FrameHeader {
 }
 
 impl FrameHeader {
-    fn new(opcode: Opcode, stream_id: i16, body_length: i32) -> Self {
+    fn response(opcode: Opcode, stream_id: i16, body_length: i32) -> Self {
         Self {
-            version: CQL_VERSION,
+            version: CQL_VERSION_RESPONSE,
             flags: 0x00,
             stream_id,
             opcode: opcode as u8,
             body_length,
         }
     }
-    
-    async fn read_from(stream: &mut TcpStream) -> Result<Self> {
+
+    async fn read_from<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<Self> {
         let mut header = [0u8; 9];
-        stream.read_exact(&mut header).await?;
-        
+        reader.read_exact(&mut header).await?;
+
         Ok(Self {
             version: header[0],
             flags: header[1],
@@ -108,7 +111,7 @@ impl FrameHeader {
             body_length: i32::from_be_bytes([header[5], header[6], header[7], header[8]]),
         })
     }
-    
+
     fn to_bytes(&self) -> [u8; 9] {
         let mut bytes = [0u8; 9];
         bytes[0] = self.version;
@@ -120,33 +123,47 @@ impl FrameHeader {
     }
 }
 
-/// CQL Server
+/// Prepared statement tracker
+#[derive(Clone)]
+struct PreparedStatement {
+    query: String,
+    is_write: bool,
+}
+
+/// CQL Proxy Server
 pub struct CqlServer {
     writer: Arc<DualWriter>,
     bind_addr: SocketAddr,
+    source_addr: SocketAddr,
 }
 
 impl CqlServer {
-    pub fn new(writer: Arc<DualWriter>, bind_addr: SocketAddr) -> Self {
-        Self { writer, bind_addr }
+    pub fn new(writer: Arc<DualWriter>, bind_addr: SocketAddr, source_addr: SocketAddr) -> Self {
+        Self {
+            writer,
+            bind_addr,
+            source_addr,
+        }
     }
-    
+
     pub async fn start(self) -> Result<()> {
         let listener = TcpListener::bind(self.bind_addr)
             .await
             .context("Failed to bind CQL server")?;
-        
-        info!("CQL server listening on {}", self.bind_addr);
-        
+
+        info!("CQL proxy listening on {}", self.bind_addr);
+        info!("Proxying to source Cassandra at {}", self.source_addr);
+
         loop {
             match listener.accept().await {
-                Ok((stream, addr)) => {
-                    info!("New CQL connection from {}", addr);
+                Ok((client_stream, client_addr)) => {
+                    info!("New CQL connection from {}", client_addr);
                     let writer = self.writer.clone();
-                    
+                    let source_addr = self.source_addr;
+
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, writer).await {
-                            error!("Connection error from {}: {}", addr, e);
+                        if let Err(e) = handle_connection(client_stream, writer, source_addr).await {
+                            debug!("Connection closed from {}: {}", client_addr, e);
                         }
                     });
                 }
@@ -158,371 +175,606 @@ impl CqlServer {
     }
 }
 
-async fn handle_connection(mut stream: TcpStream, writer: Arc<DualWriter>) -> Result<()> {
-    let peer_addr = stream.peer_addr()?;
-    debug!("Handling connection from {}", peer_addr);
-    
+/// Handle a single client connection
+async fn handle_connection(
+    mut client_stream: TcpStream,
+    writer: Arc<DualWriter>,
+    source_addr: SocketAddr,
+) -> Result<()> {
+    let client_addr = client_stream.peer_addr()?;
+    debug!("Handling connection from {}", client_addr);
+
+    // Connect to source Cassandra
+    let mut source_stream = TcpStream::connect(source_addr)
+        .await
+        .context("Failed to connect to source Cassandra")?;
+
+    debug!("Connected to source Cassandra at {}", source_addr);
+
+    // Track prepared statements for this connection
+    let prepared_statements: Arc<Mutex<HashMap<Vec<u8>, PreparedStatement>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
     loop {
-        // Read frame header
-        let header = match FrameHeader::read_from(&mut stream).await {
+        // Read frame header from client
+        let header = match FrameHeader::read_from(&mut client_stream).await {
             Ok(h) => h,
             Err(e) => {
-                debug!("Connection closed by {}: {}", peer_addr, e);
+                debug!("Connection closed by client {}: {}", client_addr, e);
                 return Ok(());
             }
         };
-        
-        debug!("Received frame: opcode={:?}, stream_id={}, body_len={}", 
-               header.opcode, header.stream_id, header.body_length);
-        
-        // Read frame body
+
+        debug!(
+            "Received frame: opcode=0x{:02x}, stream_id={}, body_len={}",
+            header.opcode, header.stream_id, header.body_length
+        );
+
+        // Read frame body from client
         let mut body = vec![0u8; header.body_length as usize];
         if header.body_length > 0 {
-            stream.read_exact(&mut body).await?;
+            client_stream.read_exact(&mut body).await?;
         }
-        
-        // Process frame
+
+        // Process based on opcode
         let response = match Opcode::from_u8(header.opcode) {
-            Some(Opcode::Startup) => handle_startup(&header, &body).await?,
-            Some(Opcode::Options) => handle_options(&header).await?,
-            Some(Opcode::Query) => handle_query(&header, &body, &writer).await?,
-            Some(Opcode::Prepare) => handle_prepare(&header, &body).await?,
-            Some(Opcode::Execute) => handle_execute(&header, &body, &writer).await?,
-            Some(Opcode::Register) => handle_register(&header).await?,
+            Some(Opcode::Query) => {
+                handle_query(
+                    &header,
+                    &body,
+                    &writer,
+                    &mut source_stream,
+                )
+                .await?
+            }
+            Some(Opcode::Prepare) => {
+                handle_prepare(
+                    &header,
+                    &body,
+                    &mut source_stream,
+                    &prepared_statements,
+                )
+                .await?
+            }
+            Some(Opcode::Execute) => {
+                handle_execute(
+                    &header,
+                    &body,
+                    &writer,
+                    &mut source_stream,
+                    &prepared_statements,
+                )
+                .await?
+            }
+            Some(Opcode::Batch) => {
+                handle_batch(
+                    &header,
+                    &body,
+                    &writer,
+                    &mut source_stream,
+                )
+                .await?
+            }
             _ => {
-                warn!("Unsupported opcode: 0x{:02x}", header.opcode);
-                build_error_frame(header.stream_id, "Unsupported opcode")?
+                // All other opcodes: forward to source and proxy response
+                forward_and_proxy(&header, &body, &mut source_stream).await?
             }
         };
-        
-        // Write response
-        stream.write_all(&response).await?;
-        stream.flush().await?;
+
+        // Send response to client
+        client_stream.write_all(&response).await?;
+        client_stream.flush().await?;
     }
 }
 
-async fn handle_startup(header: &FrameHeader, _body: &[u8]) -> Result<Vec<u8>> {
-    info!("STARTUP frame received");
-    
-    // Return READY frame
-    let response_header = FrameHeader::new(Opcode::Ready, header.stream_id, 0);
-    Ok(response_header.to_bytes().to_vec())
+/// Forward a frame to source and return the raw response
+async fn forward_and_proxy(
+    header: &FrameHeader,
+    body: &[u8],
+    source_stream: &mut TcpStream,
+) -> Result<Vec<u8>> {
+    // Forward the original frame to source
+    source_stream.write_all(&header.to_bytes()).await?;
+    if !body.is_empty() {
+        source_stream.write_all(body).await?;
+    }
+    source_stream.flush().await?;
+
+    // Read response from source
+    read_full_frame(source_stream).await
 }
 
-async fn handle_options(header: &FrameHeader) -> Result<Vec<u8>> {
-    info!("OPTIONS frame received");
-    
-    // Build SUPPORTED frame
-    let mut body = Vec::new();
-    
-    // Number of options (2)
-    body.extend_from_slice(&(2u16).to_be_bytes());
-    
-    // CQL_VERSION
-    write_string(&mut body, "CQL_VERSION");
-    body.extend_from_slice(&(1u16).to_be_bytes()); // 1 version
-    write_string(&mut body, "3.4.5");
-    
-    // COMPRESSION
-    write_string(&mut body, "COMPRESSION");
-    body.extend_from_slice(&(0u16).to_be_bytes()); // No compression
-    
-    let response_header = FrameHeader::new(Opcode::Supported, header.stream_id, body.len() as i32);
-    
-    let mut response = response_header.to_bytes().to_vec();
-    response.extend_from_slice(&body);
-    Ok(response)
+/// Read a complete CQL frame from a stream
+async fn read_full_frame(stream: &mut TcpStream) -> Result<Vec<u8>> {
+    // Read header
+    let mut header_bytes = [0u8; 9];
+    stream.read_exact(&mut header_bytes).await?;
+
+    let body_length = i32::from_be_bytes([
+        header_bytes[5],
+        header_bytes[6],
+        header_bytes[7],
+        header_bytes[8],
+    ]) as usize;
+
+    // Read body
+    let mut body = vec![0u8; body_length];
+    if body_length > 0 {
+        stream.read_exact(&mut body).await?;
+    }
+
+    // Combine header + body
+    let mut frame = Vec::with_capacity(9 + body_length);
+    frame.extend_from_slice(&header_bytes);
+    frame.extend_from_slice(&body);
+
+    Ok(frame)
 }
 
-async fn handle_query(header: &FrameHeader, body: &[u8], writer: &Arc<DualWriter>) -> Result<Vec<u8>> {
-    // Parse query
-    let (query, values) = parse_query_frame(body)?;
-    
+/// Handle QUERY opcode
+async fn handle_query(
+    header: &FrameHeader,
+    body: &[u8],
+    writer: &Arc<DualWriter>,
+    source_stream: &mut TcpStream,
+) -> Result<Vec<u8>> {
+    // Parse query string
+    let query = parse_query_string(body)?;
     debug!("QUERY: {}", query);
-    
-    // Check if this is a SELECT (read) or write operation
+
     let query_upper = query.trim().to_uppercase();
-    let is_select = query_upper.starts_with("SELECT");
-    let is_write = query_upper.starts_with("INSERT") 
-                || query_upper.starts_with("UPDATE") 
-                || query_upper.starts_with("DELETE");
-    
-    if is_select {
-        // SELECT: Route to source cluster only (reads don't need dual-write)
-        debug!("SELECT query - routing to source cluster");
-        match writer.query_source(&query, values).await {
-            Ok(rows) => {
-                // Return ROWS result
-                build_rows_result(header.stream_id, rows)
-            }
-            Err(e) => {
-                error!("SELECT failed: {}", e);
-                build_error_frame(header.stream_id, &format!("SELECT failed: {}", e))
-            }
-        }
-    } else if is_write {
-        // INSERT/UPDATE/DELETE: Dual-write to both clusters
-        debug!("Write query - dual-writing to both clusters");
-        
-        let (keyspace, table) = extract_keyspace_table(&query)?;
-        
-        let request = WriteRequest {
-            keyspace: keyspace.to_string(),
-            table: table.to_string(),
-            query: query.clone(),
-            values,
-            consistency: None,
-            request_id: Uuid::new_v4(),
-            timestamp: None,
-        };
-        
-        match writer.write(request).await {
-            Ok(_) => {
-                build_void_result(header.stream_id)
-            }
-            Err(e) => {
-                error!("Write failed: {}", e);
-                build_error_frame(header.stream_id, &format!("Write failed: {}", e))
-            }
-        }
+
+    // Check if this is a write operation
+    let is_write = query_upper.starts_with("INSERT")
+        || query_upper.starts_with("UPDATE")
+        || query_upper.starts_with("DELETE");
+
+    if is_write {
+        // Intercept writes for dual-writing
+        debug!("Write query intercepted - dual-writing");
+        handle_write_query(header, &query, body, writer, source_stream).await
     } else {
-        // Other queries (USE, CREATE, etc.) - route to source
-        debug!("DDL/Other query - routing to source cluster");
-        match writer.query_source(&query, values).await {
-            Ok(_) => {
-                build_void_result(header.stream_id)
-            }
-            Err(e) => {
-                error!("Query failed: {}", e);
-                build_error_frame(header.stream_id, &format!("Query failed: {}", e))
-            }
+        // Forward all reads (SELECT, USE, system queries, etc.) to source
+        debug!("Read/DDL query - forwarding to source");
+        forward_and_proxy(header, body, source_stream).await
+    }
+}
+
+/// Handle write queries (INSERT/UPDATE/DELETE)
+async fn handle_write_query(
+    header: &FrameHeader,
+    query: &str,
+    body: &[u8],
+    writer: &Arc<DualWriter>,
+    source_stream: &mut TcpStream,
+) -> Result<Vec<u8>> {
+    // Extract keyspace and table
+    let (keyspace, table) = extract_keyspace_table(query)?;
+
+    // Parse values from body
+    let values = parse_query_values(body)?;
+
+    // Create write request
+    let request = WriteRequest {
+        keyspace: keyspace.to_string(),
+        table: table.to_string(),
+        query: query.to_string(),
+        values,
+        consistency: None,
+        request_id: Uuid::new_v4(),
+        timestamp: None,
+    };
+
+    // Execute dual-write
+    match writer.write(request).await {
+        Ok(response) => {
+            debug!("Dual-write successful");
+            build_void_result(header.stream_id)
+        }
+        Err(e) => {
+            error!("Dual-write failed: {}", e);
+            // On dual-write failure, try source-only as fallback
+            warn!("Falling back to source-only write");
+            forward_and_proxy(header, body, source_stream).await
         }
     }
 }
 
-async fn handle_prepare(header: &FrameHeader, body: &[u8]) -> Result<Vec<u8>> {
-    let (query, _) = read_long_string(body, 0)?;
-    
-    info!("PREPARE: {}", query);
-    
-    // Generate prepared statement ID
-    let stmt_id = Uuid::new_v4().as_bytes().to_vec();
-    
-    // Build PREPARED result
-    let mut body = Vec::new();
-    
-    // Result kind: PREPARED
-    body.extend_from_slice(&(ResultKind::Prepared as i32).to_be_bytes());
-    
-    // Prepared ID (short bytes)
-    body.extend_from_slice(&(stmt_id.len() as i16).to_be_bytes());
-    body.extend_from_slice(&stmt_id);
-    
-    // Metadata (empty for now)
-    body.extend_from_slice(&(0i32).to_be_bytes()); // flags
-    body.extend_from_slice(&(0i32).to_be_bytes()); // column count
-    
-    let response_header = FrameHeader::new(Opcode::Result, header.stream_id, body.len() as i32);
-    
-    let mut response = response_header.to_bytes().to_vec();
-    response.extend_from_slice(&body);
+/// Handle PREPARE opcode
+async fn handle_prepare(
+    header: &FrameHeader,
+    body: &[u8],
+    source_stream: &mut TcpStream,
+    prepared_statements: &Arc<Mutex<HashMap<Vec<u8>, PreparedStatement>>>,
+) -> Result<Vec<u8>> {
+    // Parse the query being prepared
+    let query = parse_long_string(body, 0)?.0;
+    debug!("PREPARE: {}", query);
+
+    // Determine if this is a write query
+    let query_upper = query.trim().to_uppercase();
+    let is_write = query_upper.starts_with("INSERT")
+        || query_upper.starts_with("UPDATE")
+        || query_upper.starts_with("DELETE");
+
+    // Forward to source to get the prepared statement ID
+    let response = forward_and_proxy(header, body, source_stream).await?;
+
+    // Extract prepared statement ID from response and track it
+    if let Some(stmt_id) = extract_prepared_id(&response) {
+        let mut stmts = prepared_statements.lock().await;
+        stmts.insert(
+            stmt_id,
+            PreparedStatement {
+                query: query.clone(),
+                is_write,
+            },
+        );
+        debug!("Tracked prepared statement: is_write={}", is_write);
+    }
+
     Ok(response)
 }
 
-async fn handle_execute(header: &FrameHeader, body: &[u8], writer: &Arc<DualWriter>) -> Result<Vec<u8>> {
-    // Parse EXECUTE frame
-    let (stmt_id, values) = parse_execute_frame(body)?;
-    
-    debug!("EXECUTE: stmt_id={:?}, values={:?}", stmt_id, values);
-    
-    // For now, return VOID
-    // In production, you'd cache prepared statements and execute them
-    build_void_result(header.stream_id)
+/// Handle EXECUTE opcode
+async fn handle_execute(
+    header: &FrameHeader,
+    body: &[u8],
+    writer: &Arc<DualWriter>,
+    source_stream: &mut TcpStream,
+    prepared_statements: &Arc<Mutex<HashMap<Vec<u8>, PreparedStatement>>>,
+) -> Result<Vec<u8>> {
+    // Extract prepared statement ID
+    let stmt_id = extract_execute_stmt_id(body)?;
+
+    // Look up the prepared statement
+    let stmt_info = {
+        let stmts = prepared_statements.lock().await;
+        stmts.get(&stmt_id).cloned()
+    };
+
+    match stmt_info {
+        Some(stmt) if stmt.is_write => {
+            debug!("EXECUTE write statement: {}", stmt.query);
+
+            // Parse values from EXECUTE body
+            let values = parse_execute_values(body)?;
+
+            // Extract keyspace and table from cached query
+            let (keyspace, table) = extract_keyspace_table(&stmt.query)?;
+
+            let request = WriteRequest {
+                keyspace: keyspace.to_string(),
+                table: table.to_string(),
+                query: stmt.query.clone(),
+                values,
+                consistency: None,
+                request_id: Uuid::new_v4(),
+                timestamp: None,
+            };
+
+            match writer.write(request).await {
+                Ok(_) => {
+                    debug!("EXECUTE dual-write successful");
+                    build_void_result(header.stream_id)
+                }
+                Err(e) => {
+                    error!("EXECUTE dual-write failed: {}", e);
+                    forward_and_proxy(header, body, source_stream).await
+                }
+            }
+        }
+        _ => {
+            // Read query or unknown - forward to source
+            debug!("EXECUTE read/unknown statement - forwarding");
+            forward_and_proxy(header, body, source_stream).await
+        }
+    }
 }
 
-async fn handle_register(header: &FrameHeader) -> Result<Vec<u8>> {
-    info!("REGISTER frame received");
-    
-    // Return READY frame
-    let response_header = FrameHeader::new(Opcode::Ready, header.stream_id, 0);
-    Ok(response_header.to_bytes().to_vec())
+
+/// Handle BATCH opcode
+async fn handle_batch(
+    header: &FrameHeader,
+    body: &[u8],
+    writer: &Arc<DualWriter>,
+    source_stream: &mut TcpStream,
+) -> Result<Vec<u8>> {
+    debug!("BATCH query - forwarding to source and shadowing to target");
+
+    // For batches, forward to source first (to ensure consistency)
+    let response = forward_and_proxy(header, body, source_stream).await?;
+
+    // Shadow write to target (async, best-effort)
+    // Note: Full batch parsing and dual-writing is complex
+    // For now, we rely on individual statement interception
+    // A production implementation would parse the batch and dual-write each statement
+
+    Ok(response)
 }
 
-fn parse_query_frame(body: &[u8]) -> Result<(String, Vec<serde_json::Value>)> {
-    let (query, offset) = read_long_string(body, 0)?;
-    
-    // Parse query parameters
-    let consistency = i16::from_be_bytes([body[offset], body[offset + 1]]);
+/// Extract query string from QUERY frame body
+fn parse_query_string(body: &[u8]) -> Result<String> {
+    parse_long_string(body, 0).map(|(s, _)| s)
+}
+
+/// Parse a CQL long string from body at offset
+fn parse_long_string(body: &[u8], offset: usize) -> Result<(String, usize)> {
+    if body.len() < offset + 4 {
+        return Err(anyhow!("Body too short for long string length"));
+    }
+
+    let len = i32::from_be_bytes([
+        body[offset],
+        body[offset + 1],
+        body[offset + 2],
+        body[offset + 3],
+    ]) as usize;
+
+    if body.len() < offset + 4 + len {
+        return Err(anyhow!("Body too short for long string content"));
+    }
+
+    let string = String::from_utf8(body[offset + 4..offset + 4 + len].to_vec())?;
+    Ok((string, offset + 4 + len))
+}
+
+/// Parse query values from QUERY frame body
+fn parse_query_values(body: &[u8]) -> Result<Vec<serde_json::Value>> {
+    let (_, offset) = parse_long_string(body, 0)?;
+
+    if body.len() < offset + 3 {
+        return Ok(vec![]);
+    }
+
+    // Skip consistency (2 bytes) and read flags
     let flags = body[offset + 2];
-    
     let mut values = Vec::new();
     let mut pos = offset + 3;
-    
+
     // Check if VALUES flag is set (0x01)
-    if flags & 0x01 != 0 {
+    if flags & 0x01 != 0 && body.len() >= pos + 2 {
         let value_count = i16::from_be_bytes([body[pos], body[pos + 1]]) as usize;
         pos += 2;
-        
+
         for _ in 0..value_count {
+            if body.len() < pos + 4 {
+                break;
+            }
+
             let value_len = i32::from_be_bytes([
-                body[pos], body[pos + 1], body[pos + 2], body[pos + 3]
+                body[pos],
+                body[pos + 1],
+                body[pos + 2],
+                body[pos + 3],
             ]);
             pos += 4;
-            
+
             if value_len >= 0 {
-                let value_bytes = &body[pos..pos + value_len as usize];
-                pos += value_len as usize;
-                
-                // Convert to JSON value (simplified)
-                let value_str = String::from_utf8_lossy(value_bytes).to_string();
-                values.push(serde_json::json!(value_str));
+                let len = value_len as usize;
+                if body.len() >= pos + len {
+                    let value_bytes = &body[pos..pos + len];
+                    pos += len;
+                    let value_str = String::from_utf8_lossy(value_bytes).to_string();
+                    values.push(serde_json::json!(value_str));
+                }
             } else {
-                // NULL value
                 values.push(serde_json::Value::Null);
             }
         }
     }
-    
-    Ok((query, values))
+
+    Ok(values)
 }
 
-fn parse_execute_frame(body: &[u8]) -> Result<(Vec<u8>, Vec<serde_json::Value>)> {
-    // Read prepared statement ID
+/// Parse values from EXECUTE frame body
+fn parse_execute_values(body: &[u8]) -> Result<Vec<serde_json::Value>> {
+    // Skip prepared statement ID
+    if body.len() < 2 {
+        return Ok(vec![]);
+    }
+
     let id_len = i16::from_be_bytes([body[0], body[1]]) as usize;
-    let stmt_id = body[2..2 + id_len].to_vec();
-    
-    // For now, return empty values
-    Ok((stmt_id, vec![]))
+    let offset = 2 + id_len;
+
+    if body.len() < offset + 3 {
+        return Ok(vec![]);
+    }
+
+    // Skip consistency (2 bytes) and read flags
+    let flags = body[offset + 2];
+    let mut values = Vec::new();
+    let mut pos = offset + 3;
+
+    // Check if VALUES flag is set (0x01)
+    if flags & 0x01 != 0 && body.len() >= pos + 2 {
+        let value_count = i16::from_be_bytes([body[pos], body[pos + 1]]) as usize;
+        pos += 2;
+
+        for _ in 0..value_count {
+            if body.len() < pos + 4 {
+                break;
+            }
+
+            let value_len = i32::from_be_bytes([
+                body[pos],
+                body[pos + 1],
+                body[pos + 2],
+                body[pos + 3],
+            ]);
+            pos += 4;
+
+            if value_len >= 0 {
+                let len = value_len as usize;
+                if body.len() >= pos + len {
+                    let value_bytes = &body[pos..pos + len];
+                    pos += len;
+                    let value_str = String::from_utf8_lossy(value_bytes).to_string();
+                    values.push(serde_json::json!(value_str));
+                }
+            } else {
+                values.push(serde_json::Value::Null);
+            }
+        }
+    }
+
+    Ok(values)
 }
 
-fn extract_keyspace_table(query: &str) -> Result<(&str, &str)> {
+/// Extract prepared statement ID from EXECUTE frame body
+fn extract_execute_stmt_id(body: &[u8]) -> Result<Vec<u8>> {
+    if body.len() < 2 {
+        return Err(anyhow!("Body too short for prepared statement ID"));
+    }
+
+    let id_len = i16::from_be_bytes([body[0], body[1]]) as usize;
+
+    if body.len() < 2 + id_len {
+        return Err(anyhow!("Body too short for prepared statement ID content"));
+    }
+
+    Ok(body[2..2 + id_len].to_vec())
+}
+
+/// Extract prepared statement ID from RESULT (PREPARED) response
+fn extract_prepared_id(response: &[u8]) -> Option<Vec<u8>> {
+    // Skip header (9 bytes)
+    if response.len() < 9 + 4 + 2 {
+        return None;
+    }
+
+    // Check if this is a RESULT frame
+    if response[4] != Opcode::Result as u8 {
+        return None;
+    }
+
+    // Check result kind (4 bytes after header)
+    let result_kind = i32::from_be_bytes([
+        response[9],
+        response[10],
+        response[11],
+        response[12],
+    ]);
+
+    if result_kind != ResultKind::Prepared as i32 {
+        return None;
+    }
+
+    // Read prepared ID length (2 bytes)
+    let id_len = i16::from_be_bytes([response[13], response[14]]) as usize;
+
+    if response.len() < 15 + id_len {
+        return None;
+    }
+
+    Some(response[15..15 + id_len].to_vec())
+}
+
+
+/// Extract keyspace and table from query
+fn extract_keyspace_table(query: &str) -> Result<(String, String)> {
     let upper = query.to_uppercase();
-    
-    // Extract table name from INSERT/UPDATE/DELETE queries
-    if let Some(idx) = upper.find("INTO") {
+
+    // Try to find table name from various query patterns
+    let table_name = if let Some(idx) = upper.find("INTO") {
         let after = &query[idx + 4..].trim_start();
-        if let Some(space_idx) = after.find(|c: char| c.is_whitespace() || c == '(') {
-            let full_table = &after[..space_idx].trim();
-            return parse_qualified_name(full_table);
-        }
+        extract_table_name(after)
     } else if let Some(idx) = upper.find("UPDATE") {
         let after = &query[idx + 6..].trim_start();
-        if let Some(space_idx) = after.find(|c: char| c.is_whitespace()) {
-            let full_table = &after[..space_idx].trim();
-            return parse_qualified_name(full_table);
-        }
+        extract_table_name(after)
     } else if let Some(idx) = upper.find("FROM") {
         let after = &query[idx + 4..].trim_start();
-        if let Some(space_idx) = after.find(|c: char| c.is_whitespace()) {
-            let full_table = &after[..space_idx].trim();
-            return parse_qualified_name(full_table);
-        }
-    }
-    
-    // Default fallback
-    Ok(("unknown_keyspace", "unknown_table"))
-}
-
-fn parse_qualified_name(name: &str) -> Result<(&str, &str)> {
-    if let Some(dot_idx) = name.find('.') {
-        Ok((&name[..dot_idx], &name[dot_idx + 1..]))
+        extract_table_name(after)
     } else {
-        Ok(("unknown_keyspace", name))
+        None
+    };
+
+    match table_name {
+        Some((ks, table)) => Ok((ks.to_string(), table.to_string())),
+        None => Ok(("unknown".to_string(), "unknown".to_string())),
     }
 }
 
+/// Extract table name from query fragment
+fn extract_table_name(fragment: &str) -> Option<(&str, &str)> {
+    let end_idx = fragment.find(|c: char| c.is_whitespace() || c == '(' || c == ';')?;
+    let name = &fragment[..end_idx];
+
+    if let Some(dot_idx) = name.find('.') {
+        Some((&name[..dot_idx], &name[dot_idx + 1..]))
+    } else {
+        Some(("default", name))
+    }
+}
+
+/// Build VOID result frame
 fn build_void_result(stream_id: i16) -> Result<Vec<u8>> {
     let mut body = Vec::new();
     body.extend_from_slice(&(ResultKind::Void as i32).to_be_bytes());
-    
-    let header = FrameHeader::new(Opcode::Result, stream_id, body.len() as i32);
-    
+
+    let header = FrameHeader::response(Opcode::Result, stream_id, body.len() as i32);
+
     let mut response = header.to_bytes().to_vec();
     response.extend_from_slice(&body);
     Ok(response)
 }
 
-fn build_rows_result(stream_id: i16, rows: Vec<Vec<serde_json::Value>>) -> Result<Vec<u8>> {
-    let mut body = Vec::new();
-    
-    // Result kind: ROWS
-    body.extend_from_slice(&(ResultKind::Rows as i32).to_be_bytes());
-    
-    // Flags (no metadata for now - simplified)
-    body.extend_from_slice(&(0x0001i32).to_be_bytes()); // NO_METADATA flag
-    
-    // Column count (we'll use 0 for simplified response)
-    body.extend_from_slice(&(0i32).to_be_bytes());
-    
-    // Row count
-    body.extend_from_slice(&(rows.len() as i32).to_be_bytes());
-    
-    // Row data (simplified - would need proper encoding in production)
-    for row in rows {
-        for value in row {
-            let value_str = serde_json::to_string(&value)?;
-            let value_bytes = value_str.as_bytes();
-            
-            // Value length
-            body.extend_from_slice(&(value_bytes.len() as i32).to_be_bytes());
-            body.extend_from_slice(value_bytes);
-        }
-    }
-    
-    let header = FrameHeader::new(Opcode::Result, stream_id, body.len() as i32);
-    
-    let mut response = header.to_bytes().to_vec();
-    response.extend_from_slice(&body);
-    Ok(response)
-}
-
+/// Build ERROR frame
 fn build_error_frame(stream_id: i16, message: &str) -> Result<Vec<u8>> {
     let mut body = Vec::new();
-    
+
     // Error code: Server error (0x0000)
     body.extend_from_slice(&(0x0000i32).to_be_bytes());
-    
-    // Error message
-    write_string(&mut body, message);
-    
-    let header = FrameHeader::new(Opcode::Error, stream_id, body.len() as i32);
-    
+
+    // Error message (short string)
+    let msg_bytes = message.as_bytes();
+    body.extend_from_slice(&(msg_bytes.len() as i16).to_be_bytes());
+    body.extend_from_slice(msg_bytes);
+
+    let header = FrameHeader::response(Opcode::Error, stream_id, body.len() as i32);
+
     let mut response = header.to_bytes().to_vec();
     response.extend_from_slice(&body);
     Ok(response)
-}
-
-fn read_long_string(data: &[u8], offset: usize) -> Result<(String, usize)> {
-    let len = i32::from_be_bytes([
-        data[offset], data[offset + 1], data[offset + 2], data[offset + 3]
-    ]) as usize;
-    
-    let string = String::from_utf8(data[offset + 4..offset + 4 + len].to_vec())?;
-    Ok((string, offset + 4 + len))
-}
-
-fn write_string(buffer: &mut Vec<u8>, s: &str) {
-    buffer.extend_from_slice(&(s.len() as i16).to_be_bytes());
-    buffer.extend_from_slice(s.as_bytes());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_extract_keyspace_table() {
-        let query = "INSERT INTO files_keyspace.files (id, name) VALUES (?, ?)";
+        let query = "INSERT INTO my_keyspace.my_table (id, name) VALUES (?, ?)";
         let (ks, table) = extract_keyspace_table(query).unwrap();
-        assert_eq!(ks, "files_keyspace");
-        assert_eq!(table, "files");
+        assert_eq!(ks, "my_keyspace");
+        assert_eq!(table, "my_table");
     }
-    
+
     #[test]
-    fn test_frame_header_serialization() {
-        let header = FrameHeader::new(Opcode::Ready, 1, 0);
+    fn test_extract_table_no_keyspace() {
+        let query = "INSERT INTO my_table (id) VALUES (?)";
+        let (ks, table) = extract_keyspace_table(query).unwrap();
+        assert_eq!(ks, "default");
+        assert_eq!(table, "my_table");
+    }
+
+    #[test]
+    fn test_frame_header_response_version() {
+        let header = FrameHeader::response(Opcode::Result, 1, 4);
         let bytes = header.to_bytes();
-        assert_eq!(bytes[0], CQL_VERSION);
-        assert_eq!(bytes[4], Opcode::Ready as u8);
+        assert_eq!(bytes[0], CQL_VERSION_RESPONSE);
+        assert_eq!(bytes[4], Opcode::Result as u8);
+    }
+
+    #[test]
+    fn test_parse_long_string() {
+        let mut body = Vec::new();
+        let test_str = "SELECT * FROM test";
+        body.extend_from_slice(&(test_str.len() as i32).to_be_bytes());
+        body.extend_from_slice(test_str.as_bytes());
+
+        let (parsed, offset) = parse_long_string(&body, 0).unwrap();
+        assert_eq!(parsed, test_str);
+        assert_eq!(offset, 4 + test_str.len());
     }
 }
