@@ -590,7 +590,7 @@ impl SSTableLoader {
         stats.total_rows.fetch_add(row_count as u64, Ordering::Relaxed);
         
         // Get column specs for extracting tenant ID
-        let col_specs = result.col_specs.clone();
+        let col_specs = result.col_specs();
         
         // Find tenant ID column index
         let tenant_col_idx: Option<usize> = col_specs.iter()

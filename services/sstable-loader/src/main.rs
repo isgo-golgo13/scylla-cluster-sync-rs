@@ -19,7 +19,7 @@ use tracing::{info, warn, error};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use index_manager::{IndexManager, ParallelIndexStrategy, load_indexes_from_config};
-use filter::{FilterGovernor, FilterConfig, load_filter_config};
+use filter::{FilterGovernor, load_filter_config};
 
 #[derive(Parser, Debug)]
 #[command(name = "sstable-loader")]
