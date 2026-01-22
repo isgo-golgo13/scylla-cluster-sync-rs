@@ -9,6 +9,7 @@
 // - Progress tracking with indicatif
 // - Pause/Resume/Stop controls
 // - IndexManager integration for 60+ secondary indexes
+// - Composite partition key support (auto-discovery from schema)
 //
 
 use std::sync::Arc;
@@ -16,7 +17,7 @@ use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio::task::JoinSet;
-use tracing::{info, warn, error};
+use tracing::{info, warn, error, debug};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 
@@ -196,6 +197,92 @@ impl SSTableLoader {
     }
     
     // =========================================================================
+    // PARTITION KEY DISCOVERY
+    // =========================================================================
+    
+    /// Auto-discover ALL partition key columns from system_schema.columns
+    /// Returns columns in correct position order for token() function
+    /// 
+    /// This handles composite partition keys like (system_domain_id, id)
+    async fn discover_partition_keys(
+        &self,
+        keyspace: &str,
+        table: &str,
+    ) -> Result<Vec<String>, SyncError> {
+        debug!("Discovering partition keys for {}.{}", keyspace, table);
+        
+        let query = "SELECT column_name, position FROM system_schema.columns \
+                     WHERE keyspace_name = ? AND table_name = ? AND kind = 'partition_key'";
+        
+        let result = self.source_conn.get_session()
+            .query_unpaged(query, (keyspace, table))
+            .await
+            .map_err(|e| SyncError::DatabaseError(format!(
+                "Failed to query partition keys for {}.{}: {}", keyspace, table, e
+            )))?;
+        
+        let mut partition_keys: Vec<(i32, String)> = Vec::new();
+        
+        if let Some(rows) = result.rows {
+            for row in rows {
+                // Extract column_name (first column)
+                let column_name: String = row.columns[0]
+                    .as_ref()
+                    .and_then(|v| v.as_text())
+                    .unwrap_or_default()
+                    .to_string();
+                
+                // Extract position (second column)
+                let position: i32 = row.columns[1]
+                    .as_ref()
+                    .and_then(|v| v.as_int())
+                    .unwrap_or(0);
+                
+                partition_keys.push((position, column_name));
+            }
+        }
+        
+        // Sort by position to ensure correct order
+        partition_keys.sort_by_key(|(pos, _)| *pos);
+        
+        let columns: Vec<String> = partition_keys.into_iter().map(|(_, name)| name).collect();
+        
+        if columns.is_empty() {
+            return Err(SyncError::DatabaseError(format!(
+                "No partition key columns found for {}.{}", keyspace, table
+            )));
+        }
+        
+        info!("Discovered partition keys for {}.{}: {:?}", keyspace, table, columns);
+        Ok(columns)
+    }
+    
+    /// Get partition keys for a table
+    /// - If config specifies partition_key, use it (allows override)
+    /// - Otherwise, auto-discover from system_schema.columns
+    async fn get_partition_keys(&self, table: &TableConfig) -> Result<Vec<String>, SyncError> {
+        // If config specifies partition keys, use them
+        if !table.partition_key.is_empty() {
+            debug!("Using configured partition keys for {}: {:?}", table.name, table.partition_key);
+            return Ok(table.partition_key.clone());
+        }
+        
+        // Auto-discover from schema
+        let parts: Vec<&str> = table.name.split('.').collect();
+        if parts.len() != 2 {
+            return Err(SyncError::DatabaseError(format!(
+                "Table name must be 'keyspace.table' format, got: {}", table.name
+            )));
+        }
+        
+        let keyspace = parts[0];
+        let table_name = parts[1];
+        
+        info!("Auto-discovering partition keys for {}", table.name);
+        self.discover_partition_keys(keyspace, table_name).await
+    }
+    
+    // =========================================================================
     // MIGRATION CONTROL
     // =========================================================================
     
@@ -327,6 +414,10 @@ impl SSTableLoader {
         let start = Instant::now();
         info!("Starting migration for table: {}", table.name);
         
+        // Get ALL partition key columns (auto-discover if not in config)
+        let partition_keys = self.get_partition_keys(table).await?;
+        info!("Using partition keys for {}: {:?}", table.name, partition_keys);
+        
         // Calculate token ranges for parallel processing
         let calculator = TokenRangeCalculator::new(self.source_conn.clone());
         let config = self.config.read().await;
@@ -357,7 +448,7 @@ impl SSTableLoader {
             let source = self.source_conn.clone();
             let target = self.target_conn.clone();
             let table_name = table.name.clone();
-            let partition_key = table.partition_key[0].clone();
+            let partition_keys_clone = partition_keys.clone(); // Clone ALL partition keys
             let stats = self.stats.clone();
             let is_paused = self.is_paused.clone();
             let is_running = self.is_running.clone();
@@ -384,7 +475,7 @@ impl SSTableLoader {
                     source,
                     target,
                     &table_name,
-                    &partition_key,
+                    &partition_keys_clone, // Pass ALL partition keys
                     &range,
                     batch_size,
                     stats,
@@ -431,19 +522,26 @@ impl SSTableLoader {
     }
     
     /// Process a single token range - read from source, write to target
+    /// 
+    /// # Arguments
+    /// * `partition_keys` - ALL partition key columns (supports composite keys)
     async fn process_range(
         source: Arc<ScyllaConnection>,
         target: Arc<ScyllaConnection>,
         table: &str,
-        partition_key: &str,
+        partition_keys: &[String], // Changed from &str to &[String] for composite keys
         range: &TokenRange,
         batch_size: usize,
         stats: Arc<LoaderStats>,
     ) -> Result<(), SyncError> {
-        // Build range query using token() function
+        // Build token function with ALL partition key columns
+        // e.g., token(system_domain_id, id) for composite keys
+        let token_columns = partition_keys.join(", ");
+        
+        // Build range query using token() function with ALL partition keys
         let query = format!(
             "SELECT * FROM {} WHERE token({}) >= {} AND token({}) <= {}",
-            table, partition_key, range.start, partition_key, range.end
+            table, token_columns, range.start, token_columns, range.end
         );
         
         // Execute query on source cluster
@@ -534,5 +632,36 @@ mod tests {
         
         let json = serde_json::to_string(&stats).unwrap();
         assert!(json.contains("\"migrated_rows\":950"));
+    }
+    
+    #[test]
+    fn test_token_columns_join_single() {
+        // Test single partition key
+        let keys = vec!["id".to_string()];
+        let token_columns = keys.join(", ");
+        assert_eq!(token_columns, "id");
+    }
+    
+    #[test]
+    fn test_token_columns_join_composite() {
+        // Test composite partition key (the fix!)
+        let keys = vec![
+            "system_domain_id".to_string(),
+            "id".to_string(),
+        ];
+        let token_columns = keys.join(", ");
+        assert_eq!(token_columns, "system_domain_id, id");
+    }
+    
+    #[test]
+    fn test_token_columns_join_triple() {
+        // Test 3-column partition key
+        let keys = vec![
+            "tenant_id".to_string(),
+            "region".to_string(),
+            "entity_id".to_string(),
+        ];
+        let token_columns = keys.join(", ");
+        assert_eq!(token_columns, "tenant_id, region, entity_id");
     }
 }
