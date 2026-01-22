@@ -229,8 +229,8 @@ impl SSTableLoader {
                 let column_name: String = row.columns[0]
                     .as_ref()
                     .and_then(|v| v.as_text())
-                    .unwrap_or_default()
-                    .to_string();
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
                 
                 // Extract position (second column)
                 let position: i32 = row.columns[1]
