@@ -10,6 +10,7 @@
 // - Pause/Resume/Stop controls
 // - IndexManager integration for 60+ secondary indexes
 // - Composite partition key support (auto-discovery from schema)
+// - Tenant/table filtering via FilterGovernor
 //
 
 use std::sync::Arc;
@@ -27,6 +28,7 @@ use svckit::{
 };
 use crate::config::{SSTableLoaderConfig, TableConfig};
 use crate::token_range::{TokenRange, TokenRangeCalculator};
+use crate::filter::{FilterGovernor, FilterDecision};
 
 /// SSTableLoader - Orchestrates bulk data migration
 pub struct SSTableLoader {
@@ -36,6 +38,7 @@ pub struct SSTableLoader {
     stats: Arc<LoaderStats>,
     is_running: Arc<AtomicBool>,
     is_paused: Arc<AtomicBool>,
+    filter: Arc<FilterGovernor>,
 }
 
 /// Migration statistics (thread-safe atomic counters)
@@ -43,8 +46,10 @@ pub struct LoaderStats {
     pub total_rows: AtomicU64,
     pub migrated_rows: AtomicU64,
     pub failed_rows: AtomicU64,
+    pub filtered_rows: AtomicU64,
     pub tables_completed: AtomicU64,
     pub tables_total: AtomicU64,
+    pub tables_skipped: AtomicU64,
     pub start_time: RwLock<Option<Instant>>,
 }
 
@@ -54,8 +59,10 @@ pub struct MigrationStats {
     pub total_rows: u64,
     pub migrated_rows: u64,
     pub failed_rows: u64,
+    pub filtered_rows: u64,
     pub tables_completed: u64,
     pub tables_total: u64,
+    pub tables_skipped: u64,
     pub progress_percent: f32,
     pub throughput_rows_per_sec: f64,
     pub elapsed_secs: f64,
@@ -69,8 +76,10 @@ impl LoaderStats {
             total_rows: AtomicU64::new(0),
             migrated_rows: AtomicU64::new(0),
             failed_rows: AtomicU64::new(0),
+            filtered_rows: AtomicU64::new(0),
             tables_completed: AtomicU64::new(0),
             tables_total: AtomicU64::new(0),
+            tables_skipped: AtomicU64::new(0),
             start_time: RwLock::new(None),
         }
     }
@@ -109,8 +118,10 @@ impl LoaderStats {
         self.total_rows.store(0, Ordering::Relaxed);
         self.migrated_rows.store(0, Ordering::Relaxed);
         self.failed_rows.store(0, Ordering::Relaxed);
+        self.filtered_rows.store(0, Ordering::Relaxed);
         self.tables_completed.store(0, Ordering::Relaxed);
         self.tables_total.store(0, Ordering::Relaxed);
+        self.tables_skipped.store(0, Ordering::Relaxed);
     }
 }
 
@@ -122,9 +133,11 @@ impl Default for LoaderStats {
 
 impl SSTableLoader {
     /// Create new SSTableLoader with connections to source (GCP) and target (AWS) clusters
-    pub async fn new(config: SSTableLoaderConfig) -> Result<Self, SyncError> {
+    pub async fn new(
+        config: SSTableLoaderConfig,
+        filter: Arc<FilterGovernor>,
+    ) -> Result<Self, SyncError> {
         info!("Initializing SSTableLoader...");
-        // FIXED: Use 'hosts' instead of 'contact_points'
         info!("Source cluster: {:?}", config.source.hosts);
         info!("Target cluster: {:?}", config.target.hosts);
         
@@ -133,6 +146,10 @@ impl SSTableLoader {
         
         info!("SSTable-Loader initialized - connections established");
         
+        if filter.is_enabled().await {
+            info!("Filtering enabled - some tenants/tables will be excluded");
+        }
+        
         Ok(Self {
             source_conn,
             target_conn,
@@ -140,6 +157,7 @@ impl SSTableLoader {
             stats: Arc::new(LoaderStats::new()),
             is_running: Arc::new(AtomicBool::new(false)),
             is_paused: Arc::new(AtomicBool::new(false)),
+            filter,
         })
     }
     
@@ -148,7 +166,6 @@ impl SSTableLoader {
     // =========================================================================
     
     /// Get target connection for IndexManager
-    /// IndexManager uses this to drop/rebuild indexes on AWS target cluster
     pub fn get_target_connection(&self) -> Arc<ScyllaConnection> {
         self.target_conn.clone()
     }
@@ -168,8 +185,10 @@ impl SSTableLoader {
             total_rows: self.stats.total_rows.load(Ordering::Relaxed),
             migrated_rows: self.stats.migrated_rows.load(Ordering::Relaxed),
             failed_rows: self.stats.failed_rows.load(Ordering::Relaxed),
+            filtered_rows: self.stats.filtered_rows.load(Ordering::Relaxed),
             tables_completed: self.stats.tables_completed.load(Ordering::Relaxed),
             tables_total: self.stats.tables_total.load(Ordering::Relaxed),
+            tables_skipped: self.stats.tables_skipped.load(Ordering::Relaxed),
             progress_percent: self.stats.progress_percent(),
             throughput_rows_per_sec: self.stats.throughput().await,
             elapsed_secs: self.stats.elapsed_secs().await,
@@ -196,14 +215,16 @@ impl SSTableLoader {
         self.is_paused.load(Ordering::Relaxed)
     }
     
+    /// Get filter statistics
+    pub fn get_filter_stats(&self) -> crate::filter::FilterStatsSummary {
+        self.filter.get_stats()
+    }
+    
     // =========================================================================
     // PARTITION KEY DISCOVERY
     // =========================================================================
     
     /// Auto-discover ALL partition key columns from system_schema.columns
-    /// Returns columns in correct position order for token() function
-    /// 
-    /// This handles composite partition keys like (system_domain_id, id)
     async fn discover_partition_keys(
         &self,
         keyspace: &str,
@@ -225,14 +246,12 @@ impl SSTableLoader {
         
         if let Some(rows) = result.rows {
             for row in rows {
-                // Extract column_name (first column)
                 let column_name: String = row.columns[0]
                     .as_ref()
                     .and_then(|v| v.as_text())
                     .map(|s| s.to_string())
                     .unwrap_or_default();
                 
-                // Extract position (second column)
                 let position: i32 = row.columns[1]
                     .as_ref()
                     .and_then(|v| v.as_int())
@@ -242,7 +261,6 @@ impl SSTableLoader {
             }
         }
         
-        // Sort by position to ensure correct order
         partition_keys.sort_by_key(|(pos, _)| *pos);
         
         let columns: Vec<String> = partition_keys.into_iter().map(|(_, name)| name).collect();
@@ -258,16 +276,12 @@ impl SSTableLoader {
     }
     
     /// Get partition keys for a table
-    /// - If config specifies partition_key, use it (allows override)
-    /// - Otherwise, auto-discover from system_schema.columns
     async fn get_partition_keys(&self, table: &TableConfig) -> Result<Vec<String>, SyncError> {
-        // If config specifies partition keys, use them
         if !table.partition_key.is_empty() {
             debug!("Using configured partition keys for {}: {:?}", table.name, table.partition_key);
             return Ok(table.partition_key.clone());
         }
         
-        // Auto-discover from schema
         let parts: Vec<&str> = table.name.split('.').collect();
         if parts.len() != 2 {
             return Err(SyncError::DatabaseError(format!(
@@ -287,12 +301,6 @@ impl SSTableLoader {
     // =========================================================================
     
     /// Start bulk migration
-    /// 
-    /// # Arguments
-    /// * `keyspace_filter` - Optional list of keyspaces to migrate (None = all configured tables)
-    /// 
-    /// # Returns
-    /// * `MigrationStats` on success with final statistics
     pub async fn start_migration(
         &self, 
         keyspace_filter: Option<Vec<String>>
@@ -301,7 +309,6 @@ impl SSTableLoader {
             return Err(SyncError::MigrationError("Migration already running".to_string()));
         }
         
-        // Reset stats for new migration
         self.stats.reset();
         {
             let mut start_time = self.stats.start_time.write().await;
@@ -316,7 +323,6 @@ impl SSTableLoader {
         let tables_to_migrate: Vec<TableConfig> = if let Some(ref filter) = keyspace_filter {
             config.loader.tables.iter()
                 .filter(|t| {
-                    // Match by keyspace or full table name
                     let keyspace = t.name.split('.').next().unwrap_or("");
                     filter.contains(&keyspace.to_string()) || filter.contains(&t.name)
                 })
@@ -341,6 +347,13 @@ impl SSTableLoader {
                 break;
             }
             
+            // Check table blacklist BEFORE migrating
+            if self.filter.should_skip_table(&table.name).await {
+                info!("⊘ Skipping blacklisted table: {}", table.name);
+                self.stats.tables_skipped.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            
             info!("Migrating table: {}", table.name);
             match self.migrate_table(&table).await {
                 Ok(_) => {
@@ -349,7 +362,6 @@ impl SSTableLoader {
                 }
                 Err(e) => {
                     error!("✗ Failed to migrate table {}: {}", table.name, e);
-                    // Continue with next table (don't abort entire migration)
                 }
             }
         }
@@ -358,8 +370,9 @@ impl SSTableLoader {
         
         let final_stats = self.get_stats().await;
         info!(
-            "Migration complete: {} rows migrated, {} failed, {:.2}% success rate",
+            "Migration complete: {} rows migrated, {} filtered, {} failed, {:.2}% success rate",
             final_stats.migrated_rows,
+            final_stats.filtered_rows,
             final_stats.failed_rows,
             if final_stats.total_rows > 0 {
                 (final_stats.migrated_rows as f64 / final_stats.total_rows as f64) * 100.0
@@ -367,6 +380,16 @@ impl SSTableLoader {
                 100.0
             }
         );
+        
+        // Log filter stats
+        let filter_stats = self.filter.get_stats();
+        if filter_stats.rows_skipped > 0 || filter_stats.tables_skipped > 0 {
+            info!(
+                "Filter stats: {} tables skipped, {} rows filtered out",
+                filter_stats.tables_skipped,
+                filter_stats.rows_skipped
+            );
+        }
         
         Ok(final_stats)
     }
@@ -381,14 +404,13 @@ impl SSTableLoader {
         self.is_running.store(false, Ordering::Relaxed);
         self.is_paused.store(false, Ordering::Relaxed);
         
-        // Give workers time to finish current batch
         tokio::time::sleep(Duration::from_millis(500)).await;
         
         info!("Migration stopped");
         Ok(())
     }
     
-    /// Pause migration (workers will wait)
+    /// Pause migration
     pub fn pause(&self) {
         self.is_paused.store(true, Ordering::Relaxed);
         info!("Migration paused");
@@ -400,7 +422,7 @@ impl SSTableLoader {
         info!("Migration resumed");
     }
     
-    /// Stop migration (alias for compatibility)
+    /// Stop migration
     pub fn stop(&self) {
         self.is_running.store(false, Ordering::Relaxed);
         info!("Migration stop signal sent");
@@ -414,11 +436,22 @@ impl SSTableLoader {
         let start = Instant::now();
         info!("Starting migration for table: {}", table.name);
         
-        // Get ALL partition key columns (auto-discover if not in config)
+        // Get ALL partition key columns
         let partition_keys = self.get_partition_keys(table).await?;
         info!("Using partition keys for {}: {:?}", table.name, partition_keys);
         
-        // Calculate token ranges for parallel processing
+        // Get tenant ID columns for filtering
+        let tenant_id_columns = self.filter.get_tenant_id_columns().await;
+        
+        // Check if partition key contains a tenant ID column (for partition-level filtering)
+        let partition_has_tenant_col = partition_keys.iter()
+            .any(|pk| tenant_id_columns.contains(pk));
+        
+        if partition_has_tenant_col {
+            debug!("Table {} has tenant ID in partition key - partition-level filtering enabled", table.name);
+        }
+        
+        // Calculate token ranges
         let calculator = TokenRangeCalculator::new(self.source_conn.clone());
         let config = self.config.read().await;
         let ranges_per_core = config.loader.num_ranges_per_core;
@@ -439,7 +472,7 @@ impl SSTableLoader {
         );
         pb.set_message(format!("Migrating {}", table.name));
         
-        // Process ranges in parallel with semaphore for concurrency control
+        // Process ranges in parallel
         let mut join_set = JoinSet::new();
         let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
         
@@ -448,21 +481,21 @@ impl SSTableLoader {
             let source = self.source_conn.clone();
             let target = self.target_conn.clone();
             let table_name = table.name.clone();
-            let partition_keys_clone = partition_keys.clone(); // Clone ALL partition keys
+            let partition_keys_clone = partition_keys.clone();
+            let tenant_id_columns_clone = tenant_id_columns.clone();
             let stats = self.stats.clone();
+            let filter = self.filter.clone();
             let is_paused = self.is_paused.clone();
             let is_running = self.is_running.clone();
             let pb_clone = pb.clone();
             let batch_size = batch_size;
             
             join_set.spawn(async move {
-                // Check if migration was stopped
                 if !is_running.load(Ordering::Relaxed) {
                     drop(permit);
                     return Ok(());
                 }
                 
-                // Wait if paused
                 while is_paused.load(Ordering::Relaxed) {
                     if !is_running.load(Ordering::Relaxed) {
                         drop(permit);
@@ -475,10 +508,12 @@ impl SSTableLoader {
                     source,
                     target,
                     &table_name,
-                    &partition_keys_clone, // Pass ALL partition keys
+                    &partition_keys_clone,
+                    &tenant_id_columns_clone,
                     &range,
                     batch_size,
                     stats,
+                    filter,
                 ).await;
                 
                 pb_clone.inc(1);
@@ -487,7 +522,7 @@ impl SSTableLoader {
             });
         }
         
-        // Wait for all tasks to complete
+        // Wait for all tasks
         let mut total_errors = 0;
         while let Some(result) = join_set.join_next().await {
             match result {
@@ -507,11 +542,12 @@ impl SSTableLoader {
         
         let duration = start.elapsed();
         let migrated = self.stats.migrated_rows.load(Ordering::Relaxed);
+        let filtered = self.stats.filtered_rows.load(Ordering::Relaxed);
         let throughput = self.stats.throughput().await;
         
         info!(
-            "Table {} migration complete: {} rows in {:?} ({:.2} rows/sec)",
-            table.name, migrated, duration, throughput
+            "Table {} migration complete: {} rows migrated, {} filtered, {:?} ({:.2} rows/sec)",
+            table.name, migrated, filtered, duration, throughput
         );
         
         if total_errors > 0 {
@@ -521,30 +557,26 @@ impl SSTableLoader {
         Ok(())
     }
     
-    /// Process a single token range - read from source, write to target
-    /// 
-    /// # Arguments
-    /// * `partition_keys` - ALL partition key columns (supports composite keys)
+    /// Process a single token range with filtering support
     async fn process_range(
         source: Arc<ScyllaConnection>,
         target: Arc<ScyllaConnection>,
         table: &str,
-        partition_keys: &[String], // Changed from &str to &[String] for composite keys
+        partition_keys: &[String],
+        tenant_id_columns: &[String],
         range: &TokenRange,
         batch_size: usize,
         stats: Arc<LoaderStats>,
+        filter: Arc<FilterGovernor>,
     ) -> Result<(), SyncError> {
         // Build token function with ALL partition key columns
-        // e.g., token(system_domain_id, id) for composite keys
         let token_columns = partition_keys.join(", ");
         
-        // Build range query using token() function with ALL partition keys
         let query = format!(
             "SELECT * FROM {} WHERE token({}) >= {} AND token({}) <= {}",
             table, token_columns, range.start, token_columns, range.end
         );
         
-        // Execute query on source cluster
         let result = source.get_session()
             .query_unpaged(query.as_str(), &[])
             .await
@@ -552,36 +584,62 @@ impl SSTableLoader {
         
         let row_count = result.rows_num().unwrap_or(0);
         if row_count == 0 {
-            return Ok(()); // Empty range
+            return Ok(());
         }
         
         stats.total_rows.fetch_add(row_count as u64, Ordering::Relaxed);
         
-        // Insert rows into target cluster
-        // NOTE: This is simplified - production would use proper row iteration
-        // and prepared statements with batching
+        // Get column specs for extracting tenant ID
+        let col_specs = result.col_specs.clone();
+        
+        // Find tenant ID column index
+        let tenant_col_idx: Option<usize> = col_specs.iter()
+            .position(|spec| tenant_id_columns.contains(&spec.name.to_string()));
+        
         let insert_query = format!("INSERT INTO {} JSON ?", table);
         
         let mut batch_count = 0;
-        for _ in 0..row_count {
-            match target.get_session().query_unpaged(insert_query.as_str(), &[]).await {
-                Ok(_) => {
-                    stats.migrated_rows.fetch_add(1, Ordering::Relaxed);
-                }
-                Err(e) => {
-                    // Log but don't fail entire range
-                    if batch_count % 1000 == 0 {
-                        warn!("Insert error (batch {}): {}", batch_count, e);
+        
+        if let Some(rows) = result.rows {
+            for row in rows {
+                // Check if row should be filtered
+                if let Some(idx) = tenant_col_idx {
+                    if let Some(ref col_value) = row.columns[idx] {
+                        // Extract tenant ID value as string
+                        let tenant_id = match col_value {
+                            scylla::frame::response::result::CqlValue::Uuid(uuid) => uuid.to_string(),
+                            scylla::frame::response::result::CqlValue::Text(s) => s.clone(),
+                            scylla::frame::response::result::CqlValue::Ascii(s) => s.clone(),
+                            _ => format!("{:?}", col_value),
+                        };
+                        
+                        // Check against filter
+                        if let FilterDecision::SkipTenant(tid) = filter.check_tenant_id(&tenant_id).await {
+                            debug!("Filtering row with tenant_id: {}", tid);
+                            stats.filtered_rows.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
                     }
-                    stats.failed_rows.fetch_add(1, Ordering::Relaxed);
                 }
-            }
-            
-            batch_count += 1;
-            
-            // Yield periodically to prevent starving other tasks
-            if batch_count % batch_size == 0 {
-                tokio::task::yield_now().await;
+                
+                // Row passed filter - insert into target
+                match target.get_session().query_unpaged(insert_query.as_str(), &[]).await {
+                    Ok(_) => {
+                        stats.migrated_rows.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(e) => {
+                        if batch_count % 1000 == 0 {
+                            warn!("Insert error (batch {}): {}", batch_count, e);
+                        }
+                        stats.failed_rows.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                
+                batch_count += 1;
+                
+                if batch_count % batch_size == 0 {
+                    tokio::task::yield_now().await;
+                }
             }
         }
         
@@ -611,6 +669,7 @@ mod tests {
         stats.total_rows.store(100, Ordering::Relaxed);
         stats.migrated_rows.store(75, Ordering::Relaxed);
         stats.failed_rows.store(5, Ordering::Relaxed);
+        stats.filtered_rows.store(20, Ordering::Relaxed);
         
         assert_eq!(stats.progress_percent(), 75.0);
     }
@@ -619,11 +678,13 @@ mod tests {
     fn test_migration_stats_serialization() {
         let stats = MigrationStats {
             total_rows: 1000,
-            migrated_rows: 950,
+            migrated_rows: 900,
             failed_rows: 50,
+            filtered_rows: 50,
             tables_completed: 5,
             tables_total: 10,
-            progress_percent: 95.0,
+            tables_skipped: 2,
+            progress_percent: 90.0,
             throughput_rows_per_sec: 1234.5,
             elapsed_secs: 60.0,
             is_running: true,
@@ -631,37 +692,17 @@ mod tests {
         };
         
         let json = serde_json::to_string(&stats).unwrap();
-        assert!(json.contains("\"migrated_rows\":950"));
+        assert!(json.contains("\"migrated_rows\":900"));
+        assert!(json.contains("\"filtered_rows\":50"));
     }
     
     #[test]
-    fn test_token_columns_join_single() {
-        // Test single partition key
-        let keys = vec!["id".to_string()];
-        let token_columns = keys.join(", ");
-        assert_eq!(token_columns, "id");
-    }
-    
-    #[test]
-    fn test_token_columns_join_composite() {
-        // Test composite partition key (the fix!)
+    fn test_token_columns_join() {
         let keys = vec![
             "system_domain_id".to_string(),
             "id".to_string(),
         ];
         let token_columns = keys.join(", ");
         assert_eq!(token_columns, "system_domain_id, id");
-    }
-    
-    #[test]
-    fn test_token_columns_join_triple() {
-        // Test 3-column partition key
-        let keys = vec![
-            "tenant_id".to_string(),
-            "region".to_string(),
-            "entity_id".to_string(),
-        ];
-        let token_columns = keys.join(", ");
-        assert_eq!(token_columns, "tenant_id, region, entity_id");
     }
 }

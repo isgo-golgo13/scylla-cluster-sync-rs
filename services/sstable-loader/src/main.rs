@@ -2,6 +2,7 @@
 //
 // SSTable-Loader - High-performance bulk data migration service
 // With IndexManager integration for 60+ secondary indexes
+// With FilterGovernor integration for tenant/table filtering
 //
 
 mod loader;
@@ -9,6 +10,7 @@ mod config;
 mod api;
 mod token_range;
 mod index_manager;
+mod filter;
 
 use anyhow::Result;
 use clap::Parser;
@@ -17,6 +19,7 @@ use tracing::{info, warn, error};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use index_manager::{IndexManager, ParallelIndexStrategy, load_indexes_from_config};
+use filter::{FilterGovernor, FilterConfig, load_filter_config};
 
 #[derive(Parser, Debug)]
 #[command(name = "sstable-loader")]
@@ -30,6 +33,10 @@ struct Args {
     #[arg(short, long, default_value = "config/indexes.yaml")]
     indexes: String,
     
+    /// Path to filter rules configuration (tenant/table blacklists)
+    #[arg(short, long, default_value = "config/filter-rules.yaml")]
+    filter_config: String,
+    
     /// API server port
     #[arg(short, long, default_value = "8081")]
     port: u16,
@@ -37,6 +44,10 @@ struct Args {
     /// Skip index management (for testing or manual control)
     #[arg(long, default_value = "false")]
     skip_indexes: bool,
+    
+    /// Skip filter rules (migrate everything)
+    #[arg(long, default_value = "false")]
+    skip_filters: bool,
     
     /// Number of parallel index operations
     #[arg(long, default_value = "4")]
@@ -62,13 +73,36 @@ async fn main() -> Result<()> {
     info!("Starting SSTable-Loader service on port {}", args.port);
     info!("Configuration: {}", args.config);
     info!("Index config: {}", args.indexes);
+    info!("Filter config: {}", args.filter_config);
     info!("Skip indexes: {}", args.skip_indexes);
+    info!("Skip filters: {}", args.skip_filters);
     
-    // Load configuration
+    // Load main configuration
     let config = config::load_config(&args.config)?;
     
-    // Initialize loader
-    let loader = Arc::new(loader::SSTableLoader::new(config.clone()).await?);
+    // Initialize FilterGovernor
+    let filter_governor: Arc<FilterGovernor> = if !args.skip_filters {
+        match load_filter_config(&args.filter_config) {
+            Ok(filter_config) => {
+                info!(
+                    "Filter rules loaded: {} tenants blacklisted, {} tables blacklisted",
+                    filter_config.tenant_blacklist.len(),
+                    filter_config.table_blacklist.len()
+                );
+                Arc::new(FilterGovernor::new(&filter_config))
+            }
+            Err(e) => {
+                warn!("Failed to load filter config: {}. Proceeding without filtering.", e);
+                Arc::new(FilterGovernor::allow_all())
+            }
+        }
+    } else {
+        info!("Filtering disabled (--skip-filters flag)");
+        Arc::new(FilterGovernor::allow_all())
+    };
+    
+    // Initialize loader with filter
+    let loader = Arc::new(loader::SSTableLoader::new(config.clone(), filter_governor.clone()).await?);
     
     // Initialize IndexManager (if not skipped)
     let index_manager: Option<Arc<IndexManager>> = if !args.skip_indexes {
@@ -128,6 +162,16 @@ async fn main() -> Result<()> {
         match loader.start_migration(None).await {
             Ok(stats) => {
                 info!("Migration completed: {:?}", stats);
+                
+                // Log filter stats if filtering was active
+                if filter_governor.is_enabled().await {
+                    let filter_stats = loader.get_filter_stats();
+                    info!(
+                        "Filter summary: {} tables skipped, {} rows filtered",
+                        filter_stats.tables_skipped,
+                        filter_stats.rows_skipped
+                    );
+                }
             }
             Err(e) => {
                 error!("Migration failed: {}. Index rebuild skipped.", e);
