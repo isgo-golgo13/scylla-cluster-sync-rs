@@ -21,6 +21,7 @@ use tokio::task::JoinSet;
 use tracing::{info, warn, error, debug};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
+use scylla::frame::response::result::CqlValue;
 
 use svckit::{
     errors::SyncError,
@@ -589,12 +590,15 @@ impl SSTableLoader {
         
         stats.total_rows.fetch_add(row_count as u64, Ordering::Relaxed);
         
-        // Get column specs for extracting tenant ID
+        // Get column specs for building JSON
         let col_specs = result.col_specs();
+        let column_names: Vec<String> = col_specs.iter()
+            .map(|spec| spec.name.clone())
+            .collect();
         
         // Find tenant ID column index
-        let tenant_col_idx: Option<usize> = col_specs.iter()
-            .position(|spec| tenant_id_columns.contains(&spec.name.to_string()));
+        let tenant_col_idx: Option<usize> = column_names.iter()
+            .position(|name| tenant_id_columns.contains(name));
         
         let insert_query = format!("INSERT INTO {} JSON ?", table);
         
@@ -605,15 +609,8 @@ impl SSTableLoader {
                 // Check if row should be filtered
                 if let Some(idx) = tenant_col_idx {
                     if let Some(ref col_value) = row.columns[idx] {
-                        // Extract tenant ID value as string
-                        let tenant_id = match col_value {
-                            scylla::frame::response::result::CqlValue::Uuid(uuid) => uuid.to_string(),
-                            scylla::frame::response::result::CqlValue::Text(s) => s.clone(),
-                            scylla::frame::response::result::CqlValue::Ascii(s) => s.clone(),
-                            _ => format!("{:?}", col_value),
-                        };
+                        let tenant_id = cql_value_to_string(col_value);
                         
-                        // Check against filter
                         if let FilterDecision::SkipTenant(tid) = filter.check_tenant_id(&tenant_id).await {
                             debug!("Filtering row with tenant_id: {}", tid);
                             stats.filtered_rows.fetch_add(1, Ordering::Relaxed);
@@ -622,8 +619,14 @@ impl SSTableLoader {
                     }
                 }
                 
+                // Convert row to JSON
+                let json_row = row_to_json(&column_names, &row.columns);
+                
                 // Row passed filter - insert into target
-                match target.get_session().query_unpaged(insert_query.as_str(), &[]).await {
+                match target.get_session()
+                    .query_unpaged(insert_query.as_str(), (&json_row,))
+                    .await 
+                {
                     Ok(_) => {
                         stats.migrated_rows.fetch_add(1, Ordering::Relaxed);
                     }
@@ -656,6 +659,122 @@ impl SSTableLoader {
         *config = new_config;
         info!("SSTableLoader configuration updated");
     }
+}
+
+// =============================================================================
+// HELPER FUNCTIONS
+// =============================================================================
+
+/// Convert a CqlValue to its string representation
+fn cql_value_to_string(value: &CqlValue) -> String {
+    match value {
+        CqlValue::Uuid(uuid) => uuid.to_string(),
+        CqlValue::Timeuuid(uuid) => uuid.to_string(),
+        CqlValue::Text(s) => s.clone(),
+        CqlValue::Ascii(s) => s.clone(),
+        CqlValue::Int(i) => i.to_string(),
+        CqlValue::BigInt(i) => i.to_string(),
+        CqlValue::SmallInt(i) => i.to_string(),
+        CqlValue::TinyInt(i) => i.to_string(),
+        CqlValue::Float(f) => f.to_string(),
+        CqlValue::Double(d) => d.to_string(),
+        CqlValue::Boolean(b) => b.to_string(),
+        CqlValue::Timestamp(ts) => ts.0.to_string(),
+        CqlValue::Date(d) => d.0.to_string(),
+        CqlValue::Time(t) => t.0.to_string(),
+        CqlValue::Inet(addr) => addr.to_string(),
+        CqlValue::Varint(vi) => format!("{:?}", vi.as_signed_bytes_be_slice()),
+        CqlValue::Decimal(dec) => format!("{:?}", dec),
+        CqlValue::Blob(bytes) => format!("0x{}", bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>()),
+        _ => format!("{:?}", value),
+    }
+}
+
+/// Convert a CqlValue to its JSON representation
+fn cql_value_to_json(value: &CqlValue) -> serde_json::Value {
+    match value {
+        CqlValue::Uuid(uuid) => serde_json::json!(uuid.to_string()),
+        CqlValue::Timeuuid(uuid) => serde_json::json!(uuid.to_string()),
+        CqlValue::Text(s) => serde_json::json!(s),
+        CqlValue::Ascii(s) => serde_json::json!(s),
+        CqlValue::Int(i) => serde_json::json!(i),
+        CqlValue::BigInt(i) => serde_json::json!(i),
+        CqlValue::SmallInt(i) => serde_json::json!(i),
+        CqlValue::TinyInt(i) => serde_json::json!(i),
+        CqlValue::Float(f) => serde_json::json!(f),
+        CqlValue::Double(d) => serde_json::json!(d),
+        CqlValue::Boolean(b) => serde_json::json!(b),
+        CqlValue::Timestamp(ts) => serde_json::json!(ts.0),
+        CqlValue::Date(d) => serde_json::json!(d.0),
+        CqlValue::Time(t) => serde_json::json!(t.0),
+        CqlValue::Inet(addr) => serde_json::json!(addr.to_string()),
+        CqlValue::Blob(bytes) => {
+            let hex_str = format!("0x{}", bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>());
+            serde_json::json!(hex_str)
+        }
+        CqlValue::List(list) => {
+            let items: Vec<serde_json::Value> = list.iter().map(cql_value_to_json).collect();
+            serde_json::json!(items)
+        }
+        CqlValue::Set(set) => {
+            let items: Vec<serde_json::Value> = set.iter().map(cql_value_to_json).collect();
+            serde_json::json!(items)
+        }
+        CqlValue::Map(map) => {
+            let obj: serde_json::Map<String, serde_json::Value> = map.iter()
+                .map(|(k, v)| (cql_value_to_string(k), cql_value_to_json(v)))
+                .collect();
+            serde_json::json!(obj)
+        }
+        CqlValue::Tuple(tuple) => {
+            let items: Vec<serde_json::Value> = tuple.iter()
+                .map(|opt| opt.as_ref().map(cql_value_to_json).unwrap_or(serde_json::Value::Null))
+                .collect();
+            serde_json::json!(items)
+        }
+        CqlValue::UserDefinedType { fields, .. } => {
+            let obj: serde_json::Map<String, serde_json::Value> = fields.iter()
+                .map(|(name, opt_val)| {
+                    let val = opt_val.as_ref()
+                        .map(cql_value_to_json)
+                        .unwrap_or(serde_json::Value::Null);
+                    (name.clone(), val)
+                })
+                .collect();
+            serde_json::json!(obj)
+        }
+        CqlValue::Varint(vi) => {
+            // Convert varint to string representation
+            serde_json::json!(format!("{:?}", vi.as_signed_bytes_be_slice()))
+        }
+        CqlValue::Decimal(dec) => {
+            serde_json::json!(format!("{:?}", dec))
+        }
+        CqlValue::Counter(c) => serde_json::json!(c.0),
+        CqlValue::Duration(d) => {
+            serde_json::json!({
+                "months": d.months,
+                "days": d.days,
+                "nanoseconds": d.nanoseconds
+            })
+        }
+        CqlValue::Empty => serde_json::Value::Null,
+    }
+}
+
+/// Convert a row to JSON string for INSERT JSON
+fn row_to_json(column_names: &[String], columns: &[Option<CqlValue>]) -> String {
+    let mut map = serde_json::Map::new();
+    
+    for (name, opt_value) in column_names.iter().zip(columns.iter()) {
+        let json_value = match opt_value {
+            Some(value) => cql_value_to_json(value),
+            None => serde_json::Value::Null,
+        };
+        map.insert(name.clone(), json_value);
+    }
+    
+    serde_json::to_string(&map).unwrap_or_else(|_| "{}".to_string())
 }
 
 #[cfg(test)]
@@ -704,5 +823,18 @@ mod tests {
         ];
         let token_columns = keys.join(", ");
         assert_eq!(token_columns, "system_domain_id, id");
+    }
+    
+    #[test]
+    fn test_row_to_json() {
+        let column_names = vec!["id".to_string(), "name".to_string()];
+        let columns = vec![
+            Some(CqlValue::Int(123)),
+            Some(CqlValue::Text("test".to_string())),
+        ];
+        
+        let json = row_to_json(&column_names, &columns);
+        assert!(json.contains("\"id\":123"));
+        assert!(json.contains("\"name\":\"test\""));
     }
 }

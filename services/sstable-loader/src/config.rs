@@ -30,6 +30,8 @@ pub struct LoaderConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableConfig {
     pub name: String,
+    /// Partition key columns - if empty, will be auto-discovered from schema
+    #[serde(default)]
     pub partition_key: Vec<String>,
 }
 
