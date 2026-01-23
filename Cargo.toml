@@ -4,6 +4,7 @@ members = [
     "services/dual-writer",
     "services/dual-reader",
     "services/sstable-loader",
+    "services/doctore-dash",
 ]
 resolver = "2"
 

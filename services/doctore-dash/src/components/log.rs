@@ -14,9 +14,9 @@ pub fn ErrorLog(state: DoctoreState) -> impl IntoView {
         <div class="log-container">
             <div class="log-scroll">
                 <For
-                    each=move || logs().into_iter().rev().take(50).collect::<Vec<_>>()
-                    key=|entry| format!("{}-{}", entry.timestamp, entry.message)
-                    children=move |entry| {
+                    each={move || logs().into_iter().rev().take(50).collect::<Vec<_>>()}
+                    key={|entry| format!("{}-{}", entry.timestamp.clone(), entry.message.clone())}
+                    children={move |entry| {
                         let level_class = match entry.level.as_str() {
                             "error" => "log-error",
                             "warn" => "log-warn",
@@ -29,22 +29,23 @@ pub fn ErrorLog(state: DoctoreState) -> impl IntoView {
                             _ => "●",
                         };
                         
-                        // Format timestamp to just time portion
-                        let time = entry.timestamp
+                        let time: String = entry.timestamp
                             .split('T')
                             .nth(1)
-                            .and_then(|t| t.split('.').next())
+                            .and_then(|t: &str| t.split('.').next())
                             .unwrap_or(&entry.timestamp)
                             .to_string();
                         
+                        let message = entry.message.clone();
+                        
                         view! {
-                            <div class=format!("log-entry {}", level_class)>
+                            <div class={format!("log-entry {}", level_class)}>
                                 <span class="log-time">{time}</span>
                                 <span class="log-icon">{level_icon}</span>
-                                <span class="log-message">{entry.message.clone()}</span>
+                                <span class="log-message">{message}</span>
                             </div>
                         }
-                    }
+                    }}
                 />
             </div>
         </div>

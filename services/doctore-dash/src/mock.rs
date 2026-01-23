@@ -108,7 +108,7 @@ async fn mock_update_loop(state: DoctoreState) {
         elapsed += 1.0;
         
         // Simulate throughput (5,000 - 25,000 rows/sec with variance)
-        let base_throughput = 15_000.0 + rng.gen_range(-5_000.0..5_000.0);
+        let base_throughput: f64 = 15_000.0 + rng.gen_range(-5_000.0..5_000.0);
         let throughput = base_throughput.max(1_000.0);
         let rows_this_tick = throughput as u64;
         

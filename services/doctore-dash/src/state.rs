@@ -81,7 +81,8 @@ pub struct ThroughputPoint {
 }
 
 /// Main application state
-#[derive(Clone)]
+/// All fields are RwSignal which is Copy, so DoctoreState is Copy
+#[derive(Clone, Copy)]
 pub struct DoctoreState {
     // Migration stats
     pub migration: RwSignal<MigrationStats>,

@@ -8,25 +8,9 @@ use crate::state::DoctoreState;
 
 #[component]
 pub fn Controls(state: DoctoreState) -> impl IntoView {
+    // DoctoreState is Copy, so we can use it directly in closures
     let is_running = move || state.migration.get().is_running;
     let is_paused = move || state.migration.get().is_paused;
-    
-    // Button handlers (mock mode - just log)
-    let on_start = move |_| {
-        state.log("info", "Start migration requested");
-    };
-    
-    let on_pause = move |_| {
-        state.log("info", "Pause migration requested");
-    };
-    
-    let on_resume = move |_| {
-        state.log("info", "Resume migration requested");
-    };
-    
-    let on_stop = move |_| {
-        state.log("warn", "Stop migration requested");
-    };
     
     view! {
         <div class="controls">
@@ -35,28 +19,35 @@ pub fn Controls(state: DoctoreState) -> impl IntoView {
                 when=move || !is_running()
                 fallback=|| view! {}
             >
-                <button class="btn btn-start" on:click=on_start>
+                <button class="btn btn-start" on:click=move |_| {
+                    state.log("info", "Start migration requested");
+                }>
                     <span class="btn-icon">"▶"</span>
                     <span class="btn-text">"Start"</span>
                 </button>
             </Show>
             
-            // Pause/Resume button (shown when running)
+            // Pause button (shown when running and not paused)
             <Show
                 when=move || is_running() && !is_paused()
                 fallback=|| view! {}
             >
-                <button class="btn btn-pause" on:click=on_pause>
+                <button class="btn btn-pause" on:click=move |_| {
+                    state.log("info", "Pause migration requested");
+                }>
                     <span class="btn-icon">"⏸"</span>
                     <span class="btn-text">"Pause"</span>
                 </button>
             </Show>
             
+            // Resume button (shown when running and paused)
             <Show
                 when=move || is_running() && is_paused()
                 fallback=|| view! {}
             >
-                <button class="btn btn-resume" on:click=on_resume>
+                <button class="btn btn-resume" on:click=move |_| {
+                    state.log("info", "Resume migration requested");
+                }>
                     <span class="btn-icon">"▶"</span>
                     <span class="btn-text">"Resume"</span>
                 </button>
@@ -67,7 +58,9 @@ pub fn Controls(state: DoctoreState) -> impl IntoView {
                 when=is_running
                 fallback=|| view! {}
             >
-                <button class="btn btn-stop" on:click=on_stop>
+                <button class="btn btn-stop" on:click=move |_| {
+                    state.log("warn", "Stop migration requested");
+                }>
                     <span class="btn-icon">"⏹"</span>
                     <span class="btn-text">"Stop"</span>
                 </button>

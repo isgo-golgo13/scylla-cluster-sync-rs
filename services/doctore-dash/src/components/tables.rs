@@ -13,9 +13,9 @@ pub fn TableProgress(state: DoctoreState) -> impl IntoView {
     view! {
         <div class="tables-list">
             <For
-                each=tables
-                key=|table| table.name.clone()
-                children=move |table| {
+                each={tables}
+                key={|table| table.name.clone()}
+                children={move |table| {
                     let progress = if table.rows_total > 0 {
                         (table.rows_migrated as f64 / table.rows_total as f64) * 100.0
                     } else {
@@ -37,13 +37,13 @@ pub fn TableProgress(state: DoctoreState) -> impl IntoView {
                     };
                     
                     view! {
-                        <div class=format!("table-row {}", status_class)>
+                        <div class={format!("table-row {}", status_class)}>
                             <span class="table-status-icon">{status_icon}</span>
                             <span class="table-name">{table.name.clone()}</span>
                             <div class="table-progress-bar">
                                 <div 
                                     class="table-progress-fill"
-                                    style=format!("width: {}%", progress)
+                                    style={format!("width: {}%", progress)}
                                 />
                             </div>
                             <span class="table-progress-text">
@@ -55,7 +55,7 @@ pub fn TableProgress(state: DoctoreState) -> impl IntoView {
                             </span>
                         </div>
                     }
-                }
+                }}
             />
         </div>
     }
