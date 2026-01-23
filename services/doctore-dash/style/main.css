@@ -340,23 +340,26 @@ html, body {
 .stats-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: var(--space-md);
+    gap: var(--space-sm);
 }
 
 .stat-card {
     display: flex;
     align-items: center;
-    gap: var(--space-md);
-    padding: var(--space-md);
+    gap: var(--space-sm);
+    padding: var(--space-sm);
     background: var(--bg-card);
     border-radius: var(--radius-md);
     border: 1px solid var(--charcoal);
+    min-width: 0;
+    overflow: hidden;
 }
 
 .stat-icon {
-    font-size: 1.25rem;
-    width: 36px;
-    height: 36px;
+    font-size: 1rem;
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -373,17 +376,22 @@ html, body {
 .stat-content {
     display: flex;
     flex-direction: column;
+    min-width: 0;
+    overflow: hidden;
 }
 
 .stat-value {
-    font-size: 1.125rem;
+    font-size: 0.9375rem;
     font-weight: 600;
     font-family: var(--font-mono);
     color: var(--white);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .stat-label {
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     color: var(--light-grey);
 }
 

@@ -10,6 +10,15 @@ The architecture of the ScyllaDB (or Cassandra DB source) to ScyllaDB (or Cassan
 Rust or C++ is required to avoid any GC pauses that would fail 99999 SLA delivery as the data shuttling across the source to the target can NOT withstand latency delays.
 
 
+## Cross-Cloud WASM-Native Rust Leptos Data X-Fer Tracking Dash (Doctore)
+
+The following screenshot is of the data tranfer tracking (cross-cloud) ScyllaDB Cluster to SycllaDB Cluster tracking the services (dual-writer, ssttable-loader, dual-writer). The UI dash is called `doctore-dash` and developed using a stack of 100% pure Rust, Rust Async Tokio WebSockets, Charming (Rust D3.js equivalent) and CSS. Leptos provides ReactJS and JavaScript D3.js styling without the GC pauses and NPM prone CVEs.
+
+![doctore-dash-leptos-rust](docs/Doctore-Dash.png)
+
+
+
+
 ## The Dual-Write Proxy Service Architecture
 
 The following graphic shows the architectual workflow of the `Dual-Write Proxy` service deployed to Kubernetes.
