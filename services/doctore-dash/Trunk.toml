@@ -1,0 +1,27 @@
+# services/doctore-dash/Trunk.toml
+#
+# Trunk build configuration for Doctore Dashboard
+#
+
+[build]
+# Build target
+target = "index.html"
+# Output directory
+dist = "dist"
+
+[watch]
+# Files to watch for changes
+watch = ["src", "style", "public"]
+
+[serve]
+# Development server address
+address = "127.0.0.1"
+port = 3000
+# Open browser automatically
+open = true
+
+[[hooks]]
+# Copy CSS to dist
+stage = "post_build"
+command = "sh"
+command_arguments = ["-c", "cp -r style dist/"]

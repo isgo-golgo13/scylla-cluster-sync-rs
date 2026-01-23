@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Doctore - Database Migration Control Dashboard">
+    <title>🏛️ Doctore | Database Migration Control</title>
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    
+    <!-- Styles -->
+    <link rel="stylesheet" href="/pkg/doctore-dash.css">
+    <link rel="stylesheet" href="/style/main.css">
+    
+    <!-- Favicon -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏛️</text></svg>">
+</head>
+<body>
+    <!-- App mounts here -->
+    <div id="app"></div>
+    
+    <!-- WASM Module -->
+    <script type="module">
+        import init from '/pkg/doctore_dash.js';
+        init();
+    </script>
+    
+    <!-- Fallback for no-JS -->
+    <noscript>
+        <div style="padding: 40px; text-align: center; background: #1a1a1a; color: #f5f5f5; min-height: 100vh;">
+            <h1 style="color: #DC143C;">🏛️ Doctore</h1>
+            <p>JavaScript is required to run this dashboard.</p>
+        </div>
+    </noscript>
+</body>
+</html>

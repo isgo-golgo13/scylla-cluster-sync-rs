@@ -1,0 +1,81 @@
+[package]
+name = "doctore-dash"
+version = "0.1.0"
+edition = "2021"
+description = "Doctore Dashboard - Real-time database migration control panel"
+authors = ["Flarestick <engineering@flarestick.io>"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "doctore-dash"
+path = "src/main.rs"
+
+[dependencies]
+# Leptos - Full-stack Rust web framework
+leptos = { version = "0.6", features = ["csr"] }
+leptos_meta = { version = "0.6", features = ["csr"] }
+leptos_router = { version = "0.6", features = ["csr"] }
+
+# Charming - Rust D3.js/ECharts wrapper
+charming = { version = "0.3", features = ["wasm"] }
+
+# Server-side
+axum = { version = "0.7", optional = true }
+tokio = { version = "1", features = ["full"], optional = true }
+tower = { version = "0.4", optional = true }
+tower-http = { version = "0.5", features = ["fs", "cors"], optional = true }
+
+# WebSocket
+futures = "0.3"
+gloo-net = { version = "0.5", features = ["websocket"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Utilities
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"
+console_log = "1.0"
+log = "0.4"
+rand = { version = "0.8", features = ["small_rng"] }
+getrandom = { version = "0.2", features = ["js"] }
+
+# Tracing (server only)
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", optional = true }
+
+[features]
+default = ["csr"]
+csr = []
+ssr = ["axum", "tokio", "tower", "tower-http", "tracing", "tracing-subscriber"]
+hydrate = []
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[package.metadata.leptos]
+# Output name for WASM
+output-name = "doctore-dash"
+# Site root for TailwindCSS
+site-root = "target/site"
+# Assets directory
+site-pkg-dir = "pkg"
+# Style file
+style-file = "style/main.css"
+# Assets folder
+assets-dir = "public"
+# Site address
+site-addr = "127.0.0.1:3000"
+# Reload port
+reload-port = 3001
+# Browser features
+browserquery = "defaults"
+# WASM optimization
+wasm-opt = "z"

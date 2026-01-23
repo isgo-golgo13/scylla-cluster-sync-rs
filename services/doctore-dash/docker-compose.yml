@@ -1,0 +1,23 @@
+# services/doctore-dash/docker-compose.yml
+#
+# Standalone demo mode for Doctore Dashboard
+# Run: docker-compose up
+#
+
+version: '3.8'
+
+services:
+  doctore-dash:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: doctore-dash
+    ports:
+      - "3000:3000"
+    environment:
+      - RUST_LOG=info
+      - DATA_SOURCE=mock
+    restart: unless-stopped
+    labels:
+      - "app=doctore"
+      - "component=dashboard"
