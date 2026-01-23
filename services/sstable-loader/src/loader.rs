@@ -234,7 +234,8 @@ impl SSTableLoader {
         debug!("Discovering partition keys for {}.{}", keyspace, table);
         
         let query = "SELECT column_name, position FROM system_schema.columns \
-                     WHERE keyspace_name = ? AND table_name = ? AND kind = 'partition_key'";
+             WHERE keyspace_name = ? AND table_name = ? AND kind = 'partition_key' \
+             ALLOW FILTERING";
         
         let result = self.source_conn.get_session()
             .query_unpaged(query, (keyspace, table))
