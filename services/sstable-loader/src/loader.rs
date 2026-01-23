@@ -22,6 +22,7 @@ use tracing::{info, warn, error, debug};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use scylla::frame::response::result::CqlValue;
+use chrono::NaiveDate;
 
 use svckit::{
     errors::SyncError,
@@ -666,6 +667,18 @@ impl SSTableLoader {
 // HELPER FUNCTIONS
 // =============================================================================
 
+/// Convert CQL Date to ISO 8601 string (YYYY-MM-DD)
+/// CQL Date is stored as u32 with 2^31 as center point (1970-01-01)
+fn cql_date_to_string(date_value: u32) -> String {
+    let days_since_epoch = date_value as i64 - 2_147_483_648i64;
+    let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+    if let Some(date) = epoch.checked_add_signed(chrono::Duration::days(days_since_epoch)) {
+        date.format("%Y-%m-%d").to_string()
+    } else {
+        format!("{}", days_since_epoch)
+    }
+}
+
 /// Convert a CqlValue to its string representation
 fn cql_value_to_string(value: &CqlValue) -> String {
     match value {
@@ -681,7 +694,7 @@ fn cql_value_to_string(value: &CqlValue) -> String {
         CqlValue::Double(d) => d.to_string(),
         CqlValue::Boolean(b) => b.to_string(),
         CqlValue::Timestamp(ts) => ts.0.to_string(),
-        CqlValue::Date(d) => d.0.to_string(),
+        CqlValue::Date(d) => cql_date_to_string(d.0),
         CqlValue::Time(t) => t.0.to_string(),
         CqlValue::Inet(addr) => addr.to_string(),
         CqlValue::Varint(vi) => format!("{:?}", vi.as_signed_bytes_be_slice()),
@@ -706,7 +719,7 @@ fn cql_value_to_json(value: &CqlValue) -> serde_json::Value {
         CqlValue::Double(d) => serde_json::json!(d),
         CqlValue::Boolean(b) => serde_json::json!(b),
         CqlValue::Timestamp(ts) => serde_json::json!(ts.0),
-        CqlValue::Date(d) => serde_json::json!(d.0),
+        CqlValue::Date(d) => serde_json::json!(cql_date_to_string(d.0)),
         CqlValue::Time(t) => serde_json::json!(t.0),
         CqlValue::Inet(addr) => serde_json::json!(addr.to_string()),
         CqlValue::Blob(bytes) => {
