@@ -575,8 +575,11 @@ impl SSTableLoader {
         // Build token function with ALL partition key columns
         let token_columns = partition_keys.join(", ");
         
+        // FIX #5: Use SELECT JSON to bypass driver deserialization of complex UDTs
+        // This returns a single '[json]' column with the row as a JSON string,
+        // avoiding driver issues with List<frozen<UDT>> containing nested collections
         let query = format!(
-            "SELECT * FROM {} WHERE token({}) >= {} AND token({}) <= {}",
+            "SELECT JSON * FROM {} WHERE token({}) >= {} AND token({}) <= {}",
             table, token_columns, range.start, token_columns, range.end
         );
         
@@ -592,37 +595,48 @@ impl SSTableLoader {
         
         stats.total_rows.fetch_add(row_count as u64, Ordering::Relaxed);
         
-        // Get column specs for building JSON
-        let col_specs = result.col_specs();
-        let column_names: Vec<String> = col_specs.iter()
-            .map(|spec| spec.name.clone())
-            .collect();
-        
-        // Find tenant ID column index
-        let tenant_col_idx: Option<usize> = column_names.iter()
-            .position(|name| tenant_id_columns.contains(name));
-        
         let insert_query = format!("INSERT INTO {} JSON ?", table);
         
         let mut batch_count = 0;
         
         if let Some(rows) = result.rows {
             for row in rows {
-                // Check if row should be filtered
-                if let Some(idx) = tenant_col_idx {
-                    if let Some(ref col_value) = row.columns[idx] {
-                        let tenant_id = cql_value_to_string(col_value);
-                        
-                        if let FilterDecision::SkipTenant(tid) = filter.check_tenant_id(&tenant_id).await {
-                            debug!("Filtering row with tenant_id: {}", tid);
-                            stats.filtered_rows.fetch_add(1, Ordering::Relaxed);
-                            continue;
+                // SELECT JSON returns a single column '[json]' containing the JSON string
+                let json_row = match row.columns.first() {
+                    Some(Some(CqlValue::Text(json_str))) => json_str.clone(),
+                    Some(Some(CqlValue::Ascii(json_str))) => json_str.clone(),
+                    _ => {
+                        warn!("Unexpected row format from SELECT JSON");
+                        stats.failed_rows.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                };
+                
+                // Check if row should be filtered by parsing JSON for tenant_id
+                let mut should_skip = false;
+                if !tenant_id_columns.is_empty() {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_row) {
+                        for tenant_col in tenant_id_columns {
+                            if let Some(tenant_val) = parsed.get(tenant_col) {
+                                let tenant_id = match tenant_val {
+                                    serde_json::Value::String(s) => s.clone(),
+                                    other => other.to_string().trim_matches('"').to_string(),
+                                };
+                                
+                                if let FilterDecision::SkipTenant(tid) = filter.check_tenant_id(&tenant_id).await {
+                                    debug!("Filtering row with tenant_id: {}", tid);
+                                    stats.filtered_rows.fetch_add(1, Ordering::Relaxed);
+                                    should_skip = true;
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
                 
-                // Convert row to JSON
-                let json_row = row_to_json(&column_names, &row.columns);
+                if should_skip {
+                    continue;
+                }
                 
                 // Row passed filter - insert into target
                 match target.get_session()
