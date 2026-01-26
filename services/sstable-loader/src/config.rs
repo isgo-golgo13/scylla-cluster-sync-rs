@@ -25,6 +25,13 @@ pub struct LoaderConfig {
     pub max_retries: u32,
     pub retry_delay_secs: u64,
     pub skip_on_error: bool,
+    /// Path to JSONL file for logging failed/corrupted rows (optional)
+    #[serde(default = "default_failed_rows_file")]
+    pub failed_rows_file: String,
+}
+
+fn default_failed_rows_file() -> String {
+    "failed_rows.jsonl".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -16,6 +16,7 @@ pub struct MigrationStats {
     pub tables_completed: u64,
     pub tables_total: u64,
     pub tables_skipped: u64,
+    pub skipped_corrupted_ranges: u64,
     pub progress_percent: f32,
     pub throughput_rows_per_sec: f64,
     pub elapsed_secs: f64,

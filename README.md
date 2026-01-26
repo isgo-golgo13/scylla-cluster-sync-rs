@@ -1560,6 +1560,25 @@ Manifests:
 ```
 
 
+
+## Range Failure Error Handling
+
+```yaml
+# Enable in config
+skip_on_error: true
+failed_rows_file: "failed_rows.jsonl"
+```
+
+The JSON output IF `skip_on_error` set to `true`.
+
+```json
+{"timestamp":"2026-01-26T10:19:01Z","table":"mattiasa_assets_keyspace.asset_versions","token_range_start":-9223372036854775808,"token_range_end":-8646911284551352321,"error":"Server error: newLimit > capacity","error_type":"range_error"}
+```
+Zero regression — existing behavior unchanged when skip_on_error: false `(default)`.
+
+
+
+
 ## Future Extensions 
 
 The following is a list of future in the pipeline extensions to this service.

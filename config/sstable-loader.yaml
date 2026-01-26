@@ -63,6 +63,7 @@ loader:
   max_retries: 3
   retry_delay_secs: 5
   skip_on_error: false  # If true, skip rows that fail to migrate
+  failed_rows_file: "failed_rows.jsonl"  # JSONL file for logging skipped rows (when skip_on_error=true)
 
 observability:
   metrics_port: 9092

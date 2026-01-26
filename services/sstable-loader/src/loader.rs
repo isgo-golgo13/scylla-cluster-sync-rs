@@ -16,13 +16,15 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+use tokio::sync::{RwLock, Mutex};
 use tokio::task::JoinSet;
 use tracing::{info, warn, error, debug};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use scylla::frame::response::result::CqlValue;
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Utc};
 
 use svckit::{
     errors::SyncError,
@@ -41,6 +43,8 @@ pub struct SSTableLoader {
     is_running: Arc<AtomicBool>,
     is_paused: Arc<AtomicBool>,
     filter: Arc<FilterGovernor>,
+    /// File handle for logging failed/corrupted rows (JSONL format)
+    failed_rows_log: Arc<Mutex<Option<File>>>,
 }
 
 /// Migration statistics (thread-safe atomic counters)
@@ -52,7 +56,19 @@ pub struct LoaderStats {
     pub tables_completed: AtomicU64,
     pub tables_total: AtomicU64,
     pub tables_skipped: AtomicU64,
+    pub skipped_corrupted_ranges: AtomicU64,
     pub start_time: RwLock<Option<Instant>>,
+}
+
+/// Record for failed row logging (JSONL format)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FailedRowRecord {
+    pub timestamp: String,
+    pub table: String,
+    pub token_range_start: i64,
+    pub token_range_end: i64,
+    pub error: String,
+    pub error_type: String,
 }
 
 /// Serializable snapshot of migration stats for API responses
@@ -65,6 +81,7 @@ pub struct MigrationStats {
     pub tables_completed: u64,
     pub tables_total: u64,
     pub tables_skipped: u64,
+    pub skipped_corrupted_ranges: u64,
     pub progress_percent: f32,
     pub throughput_rows_per_sec: f64,
     pub elapsed_secs: f64,
@@ -82,6 +99,7 @@ impl LoaderStats {
             tables_completed: AtomicU64::new(0),
             tables_total: AtomicU64::new(0),
             tables_skipped: AtomicU64::new(0),
+            skipped_corrupted_ranges: AtomicU64::new(0),
             start_time: RwLock::new(None),
         }
     }
@@ -124,6 +142,7 @@ impl LoaderStats {
         self.tables_completed.store(0, Ordering::Relaxed);
         self.tables_total.store(0, Ordering::Relaxed);
         self.tables_skipped.store(0, Ordering::Relaxed);
+        self.skipped_corrupted_ranges.store(0, Ordering::Relaxed);
     }
 }
 
@@ -152,6 +171,27 @@ impl SSTableLoader {
             info!("Filtering enabled - some tenants/tables will be excluded");
         }
         
+        // Open failed rows log file if skip_on_error is enabled
+        let failed_rows_log = if config.loader.skip_on_error {
+            let file_path = &config.loader.failed_rows_file;
+            match OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(file_path)
+            {
+                Ok(file) => {
+                    info!("Skip-on-error enabled - failed rows will be logged to: {}", file_path);
+                    Some(file)
+                }
+                Err(e) => {
+                    warn!("Failed to open failed rows log file '{}': {} - continuing without file logging", file_path, e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        
         Ok(Self {
             source_conn,
             target_conn,
@@ -160,6 +200,7 @@ impl SSTableLoader {
             is_running: Arc::new(AtomicBool::new(false)),
             is_paused: Arc::new(AtomicBool::new(false)),
             filter,
+            failed_rows_log: Arc::new(Mutex::new(failed_rows_log)),
         })
     }
     
@@ -191,6 +232,7 @@ impl SSTableLoader {
             tables_completed: self.stats.tables_completed.load(Ordering::Relaxed),
             tables_total: self.stats.tables_total.load(Ordering::Relaxed),
             tables_skipped: self.stats.tables_skipped.load(Ordering::Relaxed),
+            skipped_corrupted_ranges: self.stats.skipped_corrupted_ranges.load(Ordering::Relaxed),
             progress_percent: self.stats.progress_percent(),
             throughput_rows_per_sec: self.stats.throughput().await,
             elapsed_secs: self.stats.elapsed_secs().await,
@@ -492,17 +534,18 @@ impl SSTableLoader {
             let is_running = self.is_running.clone();
             let pb_clone = pb.clone();
             let batch_size = batch_size;
+            let range_clone = range.clone();
             
             join_set.spawn(async move {
                 if !is_running.load(Ordering::Relaxed) {
                     drop(permit);
-                    return Ok(());
+                    return Ok(range_clone);
                 }
                 
                 while is_paused.load(Ordering::Relaxed) {
                     if !is_running.load(Ordering::Relaxed) {
                         drop(permit);
-                        return Ok(());
+                        return Ok(range_clone);
                     }
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
@@ -513,7 +556,7 @@ impl SSTableLoader {
                     &table_name,
                     &partition_keys_clone,
                     &tenant_id_columns_clone,
-                    &range,
+                    &range_clone,
                     batch_size,
                     stats,
                     filter,
@@ -521,18 +564,47 @@ impl SSTableLoader {
                 
                 pb_clone.inc(1);
                 drop(permit);
-                result
+                
+                // Return range info with error for logging
+                result.map(|_| range_clone.clone()).map_err(|e| (range_clone, e))
             });
         }
+        
+        // Get skip_on_error setting
+        let config = self.config.read().await;
+        let skip_on_error = config.loader.skip_on_error;
+        drop(config);
         
         // Wait for all tasks
         let mut total_errors = 0;
         while let Some(result) = join_set.join_next().await {
             match result {
                 Ok(Ok(_)) => {},
-                Ok(Err(e)) => {
+                Ok(Err((range, e))) => {
                     error!("Range processing failed: {}", e);
                     total_errors += 1;
+                    
+                    if skip_on_error {
+                        // Log to file and continue
+                        self.stats.skipped_corrupted_ranges.fetch_add(1, Ordering::Relaxed);
+                        
+                        let record = FailedRowRecord {
+                            timestamp: Utc::now().to_rfc3339(),
+                            table: table.name.clone(),
+                            token_range_start: range.start,
+                            token_range_end: range.end,
+                            error: format!("{}", e),
+                            error_type: "range_error".to_string(),
+                        };
+                        
+                        if let Ok(mut file_guard) = self.failed_rows_log.try_lock() {
+                            if let Some(ref mut file) = *file_guard {
+                                if let Ok(json) = serde_json::to_string(&record) {
+                                    let _ = writeln!(file, "{}", json);
+                                }
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     error!("Task join failed: {}", e);
@@ -546,6 +618,7 @@ impl SSTableLoader {
         let duration = start.elapsed();
         let migrated = self.stats.migrated_rows.load(Ordering::Relaxed);
         let filtered = self.stats.filtered_rows.load(Ordering::Relaxed);
+        let skipped = self.stats.skipped_corrupted_ranges.load(Ordering::Relaxed);
         let throughput = self.stats.throughput().await;
         
         info!(
@@ -554,7 +627,11 @@ impl SSTableLoader {
         );
         
         if total_errors > 0 {
-            warn!("Migration completed with {} range errors", total_errors);
+            if skip_on_error {
+                warn!("Migration completed with {} skipped corrupted ranges (logged to failed_rows.jsonl)", skipped);
+            } else {
+                warn!("Migration completed with {} range errors", total_errors);
+            }
         }
         
         Ok(())
@@ -831,6 +908,7 @@ mod tests {
             tables_completed: 5,
             tables_total: 10,
             tables_skipped: 2,
+            skipped_corrupted_ranges: 0,
             progress_percent: 90.0,
             throughput_rows_per_sec: 1234.5,
             elapsed_secs: 60.0,
