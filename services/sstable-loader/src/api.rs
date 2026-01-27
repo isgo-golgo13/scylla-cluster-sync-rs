@@ -82,6 +82,7 @@ pub async fn start_server(
         // Migration endpoints
         .route("/start", post(start_migration))
         .route("/stop", post(stop_migration))
+        .route("/migrate/:keyspace/:table", post(migrate_single_table))
         
         // Index management endpoints
         .route("/indexes/drop", post(drop_indexes))
@@ -380,5 +381,32 @@ async fn rebuild_keyspace_indexes(
             indexes_affected: None,
             details: None,
         }),
+    }
+}
+
+/// POST /migrate/:keyspace/:table - Migrate a single table
+async fn migrate_single_table(
+    State(state): State<AppState>,
+    axum::extract::Path((keyspace, table)): axum::extract::Path<(String, String)>,
+) -> Json<MigrationResponse> {
+    info!("Single table migration requested: {}.{}", keyspace, table);
+    
+    match state.loader.migrate_single_table(&keyspace, &table).await {
+        Ok(stats) => {
+            info!("Single table migration completed: {}.{}", keyspace, table);
+            Json(MigrationResponse {
+                status: "success".to_string(),
+                message: format!("Migration of {}.{} completed", keyspace, table),
+                stats: Some(serde_json::to_value(stats).unwrap_or_default()),
+            })
+        }
+        Err(e) => {
+            error!("Single table migration failed: {}", e);
+            Json(MigrationResponse {
+                status: "error".to_string(),
+                message: format!("Migration failed: {}", e),
+                stats: None,
+            })
+        }
     }
 }

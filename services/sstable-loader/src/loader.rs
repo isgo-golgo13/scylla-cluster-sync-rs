@@ -473,6 +473,58 @@ impl SSTableLoader {
         info!("Migration stop signal sent");
     }
     
+    /// Migrate a single table by keyspace and table name (API endpoint)
+    /// Auto-discovers partition keys from schema
+    pub async fn migrate_single_table(
+        &self,
+        keyspace: &str,
+        table_name: &str,
+    ) -> Result<MigrationStats, SyncError> {
+        let full_name = format!("{}.{}", keyspace, table_name);
+        info!("Single table migration requested: {}", full_name);
+        
+        // Check if already running
+        if self.is_running.load(Ordering::Relaxed) {
+            return Err(SyncError::MigrationError(
+                "Migration already in progress".to_string()
+            ));
+        }
+        
+        // Reset stats
+        self.stats.reset();
+        self.stats.tables_total.store(1, Ordering::Relaxed);
+        
+        // Set running state
+        self.is_running.store(true, Ordering::Relaxed);
+        let mut start_time = self.stats.start_time.write().await;
+        *start_time = Some(Instant::now());
+        drop(start_time);
+        
+        // Create TableConfig with empty partition_key (will auto-discover)
+        let table_config = crate::config::TableConfig {
+            name: full_name,
+            partition_key: vec![], // Auto-discover
+        };
+        
+        // Migrate
+        let result = self.migrate_table(&table_config).await;
+        
+        // Update stats
+        match &result {
+            Ok(_) => {
+                self.stats.tables_completed.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(_) => {
+                self.stats.tables_skipped.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        
+        self.is_running.store(false, Ordering::Relaxed);
+        
+        result?;
+        Ok(self.get_stats().await)
+    }
+    
     // =========================================================================
     // TABLE MIGRATION (token-range parallelism)
     // =========================================================================

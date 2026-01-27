@@ -1803,3 +1803,14 @@ Cassandra DB Kubernetes Operator
 
 ScyllaDB Kubernetes Operator 
 - https://www.scylladb.com/product/scylladb-operator-kubernetes/
+
+
+
+
+## License
+
+MIT License - see [LICENSE](LICENSE) for details.
+
+## Author
+
+**FlareStick** - [flarestick.io](https://flarestick.io)
