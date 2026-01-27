@@ -990,6 +990,122 @@ The following architectural workflow graphic shows the entire fleet of the `scyl
 ```
 
 
+
+
+## SSTable-Loader REST API
+
+Base URL: `http://localhost:9092` (configurable via `observability.metrics_port`)
+
+### Endpoints
+
+| Method | Endpoint | Body | Description |
+|--------|----------|------|-------------|
+| GET | `/health` | — | Health check |
+| GET | `/status` | — | Migration stats |
+| POST | `/start` | `{"keyspace_filter": ["ks1"]}` | Start migration (optional keyspace filter) |
+| POST | `/stop` | — | Stop migration |
+| POST | `/migrate/:keyspace/:table` | — | **Migrate a single table** |
+| POST | `/indexes/drop` | — | Drop all indexes |
+| POST | `/indexes/rebuild` | — | Rebuild all indexes |
+| GET | `/indexes/verify` | — | Verify all indexes exist |
+| GET | `/indexes/status` | — | Index manager status |
+| POST | `/indexes/drop/:keyspace` | — | Drop indexes for specific keyspace |
+| POST | `/indexes/rebuild/:keyspace` | — | Rebuild indexes for specific keyspace |
+
+
+### Requests
+
+#### Migrate a single table (NEW)
+```bash
+curl -X POST http://localhost:9092/migrate/acls_keyspace/group_acls
+```
+
+#### Start full migration
+```bash
+curl -X POST http://localhost:9092/start \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+#### Start migration for specific keyspaces
+```bash
+curl -X POST http://localhost:9092/start \
+  -H "Content-Type: application/json" \
+  -d '{"keyspace_filter": ["acls_keyspace", "assets_keyspace"]}'
+```
+
+#### Start migration with index management
+```bash
+curl -X POST http://localhost:9092/start \
+  -H "Content-Type: application/json" \
+  -d '{
+    "keyspace_filter": ["acls_keyspace"],
+    "drop_indexes_first": true,
+    "rebuild_indexes_after": true
+  }'
+```
+
+#### Check migration status
+```bash
+curl http://localhost:9092/status
+```
+
+#### Stop migration
+```bash
+curl -X POST http://localhost:9092/stop
+```
+
+#### Drop indexes for a keyspace
+```bash
+curl -X POST http://localhost:9092/indexes/drop/acls_keyspace
+```
+
+#### Rebuild indexes for a keyspace
+```bash
+curl -X POST http://localhost:9092/indexes/rebuild/acls_keyspace
+```
+
+### Responses 
+
+#### Health Check
+```json
+{
+  "status": "healthy",
+  "service": "sstable-loader",
+  "index_manager_enabled": true,
+  "index_count": 64
+}
+```
+
+#### Migration Status
+```json
+{
+  "status": "ok",
+  "migration": {
+    "total_rows": 3487274,
+    "migrated_rows": 3487274,
+    "failed_rows": 0,
+    "filtered_rows": 0,
+    "tables_completed": 1,
+    "tables_total": 1,
+    "tables_skipped": 0,
+    "skipped_corrupted_ranges": 0,
+    "progress_percent": 100.0,
+    "throughput_rows_per_sec": 15198.81,
+    "elapsed_secs": 229.22,
+    "is_running": false,
+    "is_paused": false
+  }
+}
+```
+
+
+
+
+
+
+
+
 ## CassandraDB vs ScyllaDB Kubernetes Operator Cost Reduction
 
 The high-cognitive load of configuration and JVM overhead using the Cassandra DB and its deployment using the Cassandra DB Kubernetes Operator.
