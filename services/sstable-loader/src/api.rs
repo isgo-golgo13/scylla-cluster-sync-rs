@@ -83,6 +83,7 @@ pub async fn start_server(
         .route("/start", post(start_migration))
         .route("/stop", post(stop_migration))
         .route("/migrate/:keyspace/:table", post(migrate_single_table))
+        .route("/discover/:keyspace", get(discover_tables))
         
         // Index management endpoints
         .route("/indexes/drop", post(drop_indexes))
@@ -407,6 +408,56 @@ async fn migrate_single_table(
                 message: format!("Migration failed: {}", e),
                 stats: None,
             })
+        }
+    }
+}
+
+/// GET /discover/:keyspace - Discover all tables in a keyspace
+async fn discover_tables(
+    State(state): State<AppState>,
+    axum::extract::Path(keyspace): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    info!("Discovering tables in keyspace: {}", keyspace);
+    
+    let query = "SELECT table_name FROM system_schema.tables WHERE keyspace_name = ?";
+    
+    match state.loader.get_source_connection()
+        .get_session()
+        .query_unpaged(query, (&keyspace,))
+        .await
+    {
+        Ok(result) => {
+            let tables: Vec<String> = result.rows
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|row| {
+                    row.columns.first()
+                        .and_then(|col| col.as_ref())
+                        .and_then(|val| {
+                            match val {
+                                scylla::frame::response::result::CqlValue::Text(s) => Some(s.clone()),
+                                scylla::frame::response::result::CqlValue::Ascii(s) => Some(s.clone()),
+                                _ => None,
+                            }
+                        })
+                })
+                .collect();
+            
+            info!("Discovered {} tables in keyspace {}", tables.len(), keyspace);
+            
+            Json(serde_json::json!({
+                "status": "success",
+                "keyspace": keyspace,
+                "table_count": tables.len(),
+                "tables": tables
+            }))
+        }
+        Err(e) => {
+            error!("Failed to discover tables: {}", e);
+            Json(serde_json::json!({
+                "status": "error",
+                "message": format!("Failed to discover tables: {}", e)
+            }))
         }
     }
 }

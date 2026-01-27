@@ -1011,6 +1011,7 @@ Base URL: `http://localhost:9092` (configurable via `observability.metrics_port`
 | GET | `/indexes/status` | — | Index manager status |
 | POST | `/indexes/drop/:keyspace` | — | Drop indexes for specific keyspace |
 | POST | `/indexes/rebuild/:keyspace` | — | Rebuild indexes for specific keyspace |
+| GET | `/discover/:keyspace` | — | Returns list of tables in that keyspace |
 
 
 ### Requests
@@ -1064,6 +1065,21 @@ curl -X POST http://localhost:9092/indexes/drop/acls_keyspace
 ```bash
 curl -X POST http://localhost:9092/indexes/rebuild/acls_keyspace
 ```
+
+### Returns list of tables in that keyspace
+```bash
+curl http://localhost:9092/discover/acls_keyspace
+
+# Returns
+{
+  "status": "success",
+  "keyspace": "acls_keyspace",
+  "table_count": 5,
+  "tables": ["group_acls", "user_acls", "role_acls", "permissions", "policies"]
+}
+```
+
+
 
 ### Responses 
 
