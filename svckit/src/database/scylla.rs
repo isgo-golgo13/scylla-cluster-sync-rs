@@ -1,7 +1,9 @@
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::time::Duration;
 use scylla::{Session, SessionBuilder, QueryResult};
 use scylla::transport::session::PoolSize;
+use scylla::transport::speculative_execution::SimpleSpeculativeExecutionPolicy;
 use scylla::serialize::row::SerializeRow;
 use tracing::info;
 
@@ -44,6 +46,16 @@ impl ScyllaConnection {
         // Add authentication if provided
         if let (Some(ref username), Some(ref password)) = (&config.username, &config.password) {
             session_builder = session_builder.user(username, password);
+        }
+        
+        // Add speculative execution if enabled (for GC pause resilience)
+        if config.speculative_execution {
+            info!("Speculative execution enabled (delay: {}ms)", config.speculative_delay_ms);
+            let policy = SimpleSpeculativeExecutionPolicy {
+                max_retry_count: 2,
+                retry_interval: Duration::from_millis(config.speculative_delay_ms),
+            };
+            session_builder = session_builder.speculative_execution(Arc::new(policy));
         }
 
         let session = session_builder

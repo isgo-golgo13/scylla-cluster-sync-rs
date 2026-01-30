@@ -29,6 +29,8 @@ target:
   connection_timeout_ms: 5000
   request_timeout_ms: 30000
   pool_size: 8
+  speculative_execution: true
+  speculative_delay_ms: 100
 
 loader:
   # Tables to migrate

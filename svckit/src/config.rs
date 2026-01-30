@@ -18,6 +18,12 @@ pub struct DatabaseConfig {
     pub request_timeout_ms: u64,
     #[serde(default = "default_pool_size")]
     pub pool_size: u32,
+    /// Enable speculative execution for GC pause resilience (default: false)
+    #[serde(default)]
+    pub speculative_execution: bool,
+    /// Delay before sending speculative query in ms (default: 100)
+    #[serde(default = "default_speculative_delay_ms")]
+    pub speculative_delay_ms: u64,
 }
 
 fn default_driver() -> String {
@@ -38,6 +44,10 @@ fn default_request_timeout_ms() -> u64 {
 
 fn default_pool_size() -> u32 {
     4
+}
+
+fn default_speculative_delay_ms() -> u64 {
+    100
 }
 
 impl DatabaseConfig {
@@ -62,6 +72,8 @@ impl Default for DatabaseConfig {
             connection_timeout_ms: default_connection_timeout_ms(),
             request_timeout_ms: default_request_timeout_ms(),
             pool_size: default_pool_size(),
+            speculative_execution: false,
+            speculative_delay_ms: default_speculative_delay_ms(),
         }
     }
 }
