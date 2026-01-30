@@ -554,6 +554,8 @@ impl SSTableLoader {
         let ranges_per_core = config.loader.num_ranges_per_core;
         let max_concurrent = config.loader.max_concurrent_loaders;
         let batch_size = config.loader.batch_size;
+        let max_retries = config.loader.max_retries;
+        let retry_delay_ms = config.loader.retry_delay_secs * 1000;
         drop(config);
         
         let ranges = calculator.calculate_ranges(ranges_per_core).await?;
@@ -587,6 +589,9 @@ impl SSTableLoader {
             let pb_clone = pb.clone();
             let batch_size = batch_size;
             let range_clone = range.clone();
+            let max_retries = max_retries;
+            let retry_delay_ms = retry_delay_ms;
+            let failed_rows_log = self.failed_rows_log.clone();
             
             join_set.spawn(async move {
                 if !is_running.load(Ordering::Relaxed) {
@@ -612,6 +617,9 @@ impl SSTableLoader {
                     batch_size,
                     stats,
                     filter,
+                    max_retries,
+                    retry_delay_ms,
+                    failed_rows_log,
                 ).await;
                 
                 pb_clone.inc(1);
@@ -700,6 +708,9 @@ impl SSTableLoader {
         batch_size: usize,
         stats: Arc<LoaderStats>,
         filter: Arc<FilterGovernor>,
+        max_retries: u32,
+        retry_delay_ms: u64,
+        failed_rows_log: Arc<Mutex<Option<File>>>,
     ) -> Result<(), SyncError> {
         // Build token function with ALL partition key columns
         let token_columns = partition_keys.join(", ");
@@ -767,19 +778,54 @@ impl SSTableLoader {
                     continue;
                 }
                 
-                // Row passed filter - insert into target
-                match target.get_session()
-                    .query_unpaged(insert_query.as_str(), (&json_row,))
-                    .await 
-                {
-                    Ok(_) => {
-                        stats.migrated_rows.fetch_add(1, Ordering::Relaxed);
-                    }
-                    Err(e) => {
-                        if batch_count % 1000 == 0 {
-                            warn!("Insert error (batch {}): {}", batch_count, e);
+                // Row passed filter - insert into target with retry
+                let mut insert_success = false;
+                let mut last_error: Option<String> = None;
+                
+                for attempt in 0..=max_retries {
+                    match target.get_session()
+                        .query_unpaged(insert_query.as_str(), (&json_row,))
+                        .await 
+                    {
+                        Ok(_) => {
+                            stats.migrated_rows.fetch_add(1, Ordering::Relaxed);
+                            insert_success = true;
+                            break;
                         }
-                        stats.failed_rows.fetch_add(1, Ordering::Relaxed);
+                        Err(e) => {
+                            last_error = Some(format!("{}", e));
+                            if attempt < max_retries {
+                                // Retry after delay
+                                tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
+                            }
+                        }
+                    }
+                }
+                
+                // If all retries failed, log to JSONL and count as failed
+                if !insert_success {
+                    if batch_count % 1000 == 0 {
+                        warn!("Insert failed after {} retries (batch {}): {}", 
+                            max_retries, batch_count, last_error.as_deref().unwrap_or("unknown"));
+                    }
+                    stats.failed_rows.fetch_add(1, Ordering::Relaxed);
+                    
+                    // Log to JSONL file
+                    let record = FailedRowRecord {
+                        timestamp: Utc::now().to_rfc3339(),
+                        table: table.to_string(),
+                        token_range_start: range.start,
+                        token_range_end: range.end,
+                        error: last_error.unwrap_or_else(|| "unknown".to_string()),
+                        error_type: "row_insert_error".to_string(),
+                    };
+                    
+                    if let Ok(mut file_guard) = failed_rows_log.try_lock() {
+                        if let Some(ref mut file) = *file_guard {
+                            if let Ok(json) = serde_json::to_string(&record) {
+                                let _ = writeln!(file, "{}", json);
+                            }
+                        }
                     }
                 }
                 
