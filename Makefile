@@ -163,6 +163,20 @@ clean:
 	docker buildx prune -f
 
 # =============================================================================
+# TUI Dashboard
+# =============================================================================
+
+.PHONY: tui-demo tui-dash
+
+tui-demo:
+	@echo "Starting TUI Dashboard (Demo Mode)..."
+	cargo run --bin tui-dash -- --demo
+
+tui-dash:
+	@echo "Starting TUI Dashboard..."
+	cargo run --bin tui-dash
+
+# =============================================================================
 # CI/CD
 # =============================================================================
 
@@ -191,6 +205,10 @@ help:
 	@echo "Build:"
 	@echo "  build            - Build all services (debug)"
 	@echo "  build-release    - Build all services (release)"
+	@echo ""
+	@echo "TUI Dashboard:"
+	@echo "  tui-demo         - Run TUI dashboard in demo mode (no DB required)"
+	@echo "  tui-dash         - Run TUI dashboard (connects to sstable-loader API)"
 	@echo ""
 	@echo "Development:"
 	@echo "  fmt              - Format code"

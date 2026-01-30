@@ -5,10 +5,11 @@ members = [
     "services/dual-reader",
     "services/sstable-loader",
     "services/doctore-dash",
+    "services/tui-dash",
 ]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
-authors = ["Engine Vector <admin@enginevector.io>"]
+authors = ["LuckyDrone <info@luckydrone.io>"]
 edition = "2021"

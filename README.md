@@ -989,6 +989,30 @@ The following architectural workflow graphic shows the entire fleet of the `scyl
 []
 ```
 
+## SSTable-Loader Terminal UI (TUI) Status Dash
+
+This TUI (using Rust `ratatui` crate) calls on the existing `sstable-loader` status endpoint at ` http://localhost:9092/status`. No WebSockets involved.
+
+![ssstable-loader-tui-dash](docs/TUI-SSTableLoader-Dash.png)
+
+The provided project root `Makefile` includes the following targets to fire up this terminal ui.
+
+```shell
+# Demo mode (no connection)
+make tui-demo
+
+# Live mode (default localhost:9092)
+make tui-dash
+
+# Live mode with port-forward
+kubectl port-forward svc/sstable-loader 9092:9092
+make tui-dash
+
+# Live mode custom URL
+cargo run --bin tui-dash -- --api-url http://sstable-loader.example.com:9092
+```
+
+
 
 
 
@@ -1149,7 +1173,7 @@ target:
 **Real-Case:** Witnessingt NNN-second GC pause → coordinator frozen → all writes to that node failed. With speculative execution, backup query would route to healthy node after 100ms.
 
 
-### Placebo for ScyllaDB (Future ScyllaDB Deployments )
+### NoOp for ScyllaDB (Future ScyllaDB Deployments )
 
 | Cassandra (JVM) | ScyllaDB (C++) |
 |-----------------|----------------|
@@ -1190,7 +1214,6 @@ ScyllaDB doesn't have GC pauses, so the 100ms threshold is almost never hit. The
 - **Cassandra:** Not full fix for JVM's fundamental weakness
 - **ScyllaDB:** Not needed, no GC, no issues
 - **Future Fix:** Switch to ScyllaDB
-
 
 
 
@@ -1319,7 +1342,7 @@ scylla-cluster-sync-rs
 │   │   └── src
 │   │       ├── api.rs
 │   │       ├── config.rs
-│   │       ├── main.rs
+│   │       ├── main.rsq
 │   │       ├── reader.rs
 │   │       ├── reconciliation.rs
 │   │       └── validator.rs
@@ -2019,4 +2042,4 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## Author
 
-**FlareStick** - [flarestick.io](https://flarestick.io)
+**LuckyDrone** - [luckydrone.io](https://luckydrone.io)
