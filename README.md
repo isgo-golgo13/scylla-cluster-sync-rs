@@ -1116,6 +1116,80 @@ curl http://localhost:9092/discover/acls_keyspace
 ```
 
 
+## Speculative Execution Feature (SSTableLoader)
+
+### Summary
+
+When enabled, the driver sends the same query to a **backup node** if the primary coordinator doesn't respond within a configurable delay (default: 100ms). First response wins.
+
+### Configuration
+
+Add to `target:` section in `sstable-loader.yaml`:
+
+```yaml
+target:
+  # ... existing fields ...
+  speculative_execution: true
+  speculative_delay_ms: 100
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `speculative_execution` | `false` | Enable/disable feature |
+| `speculative_delay_ms` | `100` | Delay before sending backup query |
+
+### Addresses Target (Cassandra/JVM)
+
+| Problem | Cause | How Speculative Execution Helps |
+|---------|-------|--------------------------------|
+| Write timeouts | JVM GC pause freezes coordinator | Backup query goes to non-frozen node |
+| `LOCAL_QUORUM` failures | Coordinator unresponsive | Second node can fulfill quorum |
+| Latency spikes | Stop-the-world GC events | First response wins, masks slow node |
+
+**Real-Case:** Witnessingt NNN-second GC pause → coordinator frozen → all writes to that node failed. With speculative execution, backup query would route to healthy node after 100ms.
+
+
+### Placebo for ScyllaDB (Future ScyllaDB Deployments )
+
+| Cassandra (JVM) | ScyllaDB (C++) |
+|-----------------|----------------|
+| JVM garbage collection | No GC — manual memory management |
+| Stop-the-world pauses (seconds to minutes) | No pauses |
+| Unpredictable latency spikes | Consistent low latency |
+| Speculative execution **needed** | Speculative execution **rarely triggers** |
+
+ScyllaDB doesn't have GC pauses, so the 100ms threshold is almost never hit. The feature is harmless but unnecessary — a placebo that adds negligible overhead.
+
+### Impact on Services
+
+| Service | `speculative_execution` | Effect |
+|---------|------------------------|--------|
+| dual-writer | `false` (default) | Unchanged behavior |
+| dual-reader | `false` (default) | Unchanged behavior |
+| sstable-loader | `true` (if configured) | GC pause resilience |
+
+### Trade-Offs
+
+| Pro | Con |
+|-----|-----|
+| Masks slow/frozen nodes | 2x queries during slow responses |
+| Reduces failed writes | Slightly higher cluster load |
+| Simple config toggle | Doesn't fix root cause (JVM) |
+
+
+### Config Options (sstable-loader.yaml)
+
+| Strategy | Config | Use Case |
+|----------|--------|----------|
+| Retry only | `speculative_execution: false` + `max_retries: 20` | Long GC pauses (seconds) |
+| Speculative only | `speculative_execution: true` + low retries | Short GC pauses (<1s) |
+| **Mixed-Mode** | `speculative_execution: true` + `max_retries: 10` | Best coverage |
+
+### Conclusion 
+
+- **Cassandra:** Not full fix for JVM's fundamental weakness
+- **ScyllaDB:** Not needed, no GC, no issues
+- **Future Fix:** Switch to ScyllaDB
 
 
 

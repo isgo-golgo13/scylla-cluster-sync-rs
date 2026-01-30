@@ -3,7 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use scylla::{Session, SessionBuilder, QueryResult};
 use scylla::transport::session::PoolSize;
-use scylla::transport::speculative_execution::SimpleSpeculativeExecutionPolicy;
+use scylla::transport::execution_profile::ExecutionProfile;
+use scylla::speculative_execution::SimpleSpeculativeExecutionPolicy;
 use scylla::serialize::row::SerializeRow;
 use tracing::info;
 
@@ -48,14 +49,18 @@ impl ScyllaConnection {
             session_builder = session_builder.user(username, password);
         }
         
-        // Add speculative execution if enabled (for GC pause resilience)
+        // Add speculative execution via ExecutionProfile if enabled (for GC pause resilience)
         if config.speculative_execution {
             info!("Speculative execution enabled (delay: {}ms)", config.speculative_delay_ms);
             let policy = SimpleSpeculativeExecutionPolicy {
                 max_retry_count: 2,
                 retry_interval: Duration::from_millis(config.speculative_delay_ms),
             };
-            session_builder = session_builder.speculative_execution(Arc::new(policy));
+            let profile = ExecutionProfile::builder()
+                .speculative_execution_policy(Some(Arc::new(policy)))
+                .build();
+            let handle = profile.into_handle();
+            session_builder = session_builder.default_execution_profile_handle(handle);
         }
 
         let session = session_builder
