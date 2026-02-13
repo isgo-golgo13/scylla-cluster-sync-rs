@@ -166,15 +166,20 @@ clean:
 # TUI Dashboard
 # =============================================================================
 
-.PHONY: tui-demo tui-dash
+.PHONY: tui-demo tui-dash tui-live
 
 tui-demo:
 	@echo "Starting TUI Dashboard (Demo Mode)..."
 	cargo run --bin tui-dash -- --demo
 
 tui-dash:
-	@echo "Starting TUI Dashboard..."
+	@echo "Starting TUI Dashboard (Live Mode)..."
 	cargo run --bin tui-dash
+
+## make tui-live API_URL=http://sstable-loader.prod:9092
+tui-live:
+	@echo "Starting TUI Dashboard (Live Mode)..."
+	cargo run --bin tui-dash -- --api-url $(API_URL)
 
 # =============================================================================
 # CI/CD
