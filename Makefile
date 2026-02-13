@@ -42,7 +42,7 @@ docker-setup:
 .PHONY: docker-build docker-build-dual-writer docker-build-dual-reader docker-build-sstable-loader
 
 docker-build: docker-setup docker-build-dual-writer docker-build-dual-reader docker-build-sstable-loader
-	@echo "✅ All images built for $(PLATFORM)"
+	@echo "All images built for $(PLATFORM)"
 
 docker-build-dual-writer: docker-setup
 	@echo "Building dual-writer for $(PLATFORM)..."
@@ -75,7 +75,7 @@ docker-build-sstable-loader: docker-setup
 .PHONY: docker-push docker-push-dual-writer docker-push-dual-reader docker-push-sstable-loader
 
 docker-push: docker-push-dual-writer docker-push-dual-reader docker-push-sstable-loader
-	@echo "✅ All images pushed to $(DOCKER_REGISTRY)"
+	@echo "All images pushed to $(DOCKER_REGISTRY)"
 
 docker-push-dual-writer:
 	@echo "Pushing dual-writer..."
@@ -99,7 +99,7 @@ docker-push-sstable-loader:
 .PHONY: docker-release docker-release-dual-writer docker-release-dual-reader docker-release-sstable-loader
 
 docker-release: docker-setup docker-release-dual-writer docker-release-dual-reader docker-release-sstable-loader
-	@echo "✅ All images built and pushed to $(DOCKER_REGISTRY)"
+	@echo "All images built and pushed to $(DOCKER_REGISTRY)"
 
 docker-release-dual-writer: docker-setup
 	@echo "Building and pushing dual-writer for $(PLATFORM)..."
