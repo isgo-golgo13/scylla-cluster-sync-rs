@@ -432,7 +432,7 @@ spec:
           port: 9092
 ```
 
-## Troubleshooting
+## Fix Worklows (Verifications)
 
 ### Gateway Not Getting External IP
 
