@@ -64,6 +64,22 @@ The `tui-dash` CLI runs locally (outside Kubernetes) and connects to the `sstabl
 | Ingress (nginx/traefik) | Partial | Legacy API, limited features, controller-specific annotations |
 | **Gateway API** | **Yes** | Kubernetes-native, role-oriented, TLS-native, portable |
 
+
+## Quick-Dirty Connect (Not Production-Grade)
+As a crack the glass connectivity test to connect the `tui-dash
+
+```shell
+kubectl port-forward svc/scylla-cluster-sync-sstable-loader 9092:9092 -n scylla-sync & make tui-dash
+```
+
+1. kubectl port-forward tunnels localhost:9092 → sstable-loader pod in cluster
+2. make tui-dash connects to http://localhost:9092 (default)
+3. tui-dash polls /status endpoint, displays live migration stats1.
+
+DO NOT recommend use of this style for production, even for non-production.
+
+
+
 ## Prerequisites
 
 ### 1. Install Envoy Gateway

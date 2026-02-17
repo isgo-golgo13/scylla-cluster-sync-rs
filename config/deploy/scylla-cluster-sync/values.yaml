@@ -7,7 +7,7 @@
 # Global Configuration
 # -----------------------------------------------------------------------------
 global:
-  imageRegistry: ghcr.io/enginevector
+  imageRegistry: ghcr.io/<org-registry>
   imagePullPolicy: IfNotPresent
   imagePullSecrets: []
   commonLabels:
