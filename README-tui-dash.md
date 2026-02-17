@@ -66,7 +66,7 @@ The `tui-dash` CLI runs locally (outside Kubernetes) and connects to the `sstabl
 
 
 ## Quick-Dirty Connect (Not Production-Grade)
-As a crack the glass connectivity test to connect the `tui-dash
+As a crack the glass connectivity test to connect the tui-dash using non-production grade `kubectl port-forward`.
 
 ```shell
 kubectl port-forward svc/scylla-cluster-sync-sstable-loader 9092:9092 -n scylla-sync & make tui-dash
