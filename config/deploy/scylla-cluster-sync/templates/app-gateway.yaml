@@ -16,6 +16,9 @@ spec:
     - name: {{ .name }}
       protocol: {{ .protocol }}
       port: {{ .port }}
+      {{- if .hostname }}
+      hostname: {{ .hostname | quote }}
+      {{- end }}
       {{- if .tls }}
       tls:
         mode: {{ .tls.mode }}
@@ -88,22 +91,69 @@ kind: HTTPRoute
 metadata:
   name: {{ include "scylla-cluster-sync.fullname" . }}-sstable-loader
   namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "scylla-cluster-sync.labels" . | nindent 4 }}
 spec:
   parentRefs:
     - name: {{ .Values.gateway.name }}
       namespace: {{ .Release.Namespace }}
+      {{- if .Values.gateway.routes.sstableLoader.sectionName }}
+      sectionName: {{ .Values.gateway.routes.sstableLoader.sectionName }}
+      {{- end }}
   hostnames:
     {{- range .Values.gateway.routes.sstableLoader.hostnames }}
     - {{ . | quote }}
     {{- end }}
   rules:
+    # Health and Status endpoints (read-only, safe for tui-dash)
     - matches:
         - path:
-            type: {{ .Values.gateway.routes.sstableLoader.pathType }}
-            value: {{ .Values.gateway.routes.sstableLoader.path }}
+            type: Exact
+            value: /health
+        - path:
+            type: Exact
+            value: /status
       backendRefs:
         - name: {{ include "scylla-cluster-sync.fullname" . }}-sstable-loader
-          port: {{ .Values.sstableLoader.service.port }}
+          port: {{ .Values.sstableLoader.service.apiPort | default .Values.sstableLoader.service.metricsPort }}
+    # Discovery endpoint
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /discover
+      backendRefs:
+        - name: {{ include "scylla-cluster-sync.fullname" . }}-sstable-loader
+          port: {{ .Values.sstableLoader.service.apiPort | default .Values.sstableLoader.service.metricsPort }}
+    # Migration control endpoints
+    - matches:
+        - path:
+            type: Exact
+            value: /start
+          method: POST
+        - path:
+            type: Exact
+            value: /stop
+          method: POST
+      backendRefs:
+        - name: {{ include "scylla-cluster-sync.fullname" . }}-sstable-loader
+          port: {{ .Values.sstableLoader.service.apiPort | default .Values.sstableLoader.service.metricsPort }}
+    # Single table migration endpoint
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /migrate
+          method: POST
+      backendRefs:
+        - name: {{ include "scylla-cluster-sync.fullname" . }}-sstable-loader
+          port: {{ .Values.sstableLoader.service.apiPort | default .Values.sstableLoader.service.metricsPort }}
+    # Index management endpoints
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /indexes
+      backendRefs:
+        - name: {{ include "scylla-cluster-sync.fullname" . }}-sstable-loader
+          port: {{ .Values.sstableLoader.service.apiPort | default .Values.sstableLoader.service.metricsPort }}
 {{- end }}
 
 {{- end }}

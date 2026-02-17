@@ -183,6 +183,7 @@ sstableLoader:
     type: ClusterIP
     port: 8081
     metricsPort: 9092
+    apiPort: 9092  # REST API port (same as metrics, used by tui-dash)
   
   podAnnotations:
     prometheus.io/scrape: "true"
@@ -306,11 +307,37 @@ gateway:
     - name: https
       protocol: HTTPS
       port: 443
+      hostname: ""  # Set to your hostname, e.g., "migration.example.com"
       tls:
         mode: Terminate
         certificateRefs:
-          - name: migration-tls
+          - name: scylla-sync-tls
             kind: Secret
+  
+  # TLS Certificate Configuration
+  tls:
+    enabled: false
+    secretName: scylla-sync-tls
+    dnsNames: []  # List of DNS names for the certificate
+    
+    # Option 1: Use cert-manager (recommended)
+    certManager:
+      enabled: false
+      issuerName: "letsencrypt-prod"
+      issuerKind: "ClusterIssuer"
+      issuerGroup: ""
+      duration: "2160h"      # 90 days
+      renewBefore: "360h"    # 15 days
+      privateKey:
+        algorithm: RSA
+        size: 2048
+    
+    # Option 2: Use existing secret
+    existingSecret: ""
+    
+    # Option 3: Provide cert/key directly (not recommended for production)
+    crt: ""
+    key: ""
   
   routes:
     dualWriter:
@@ -331,8 +358,9 @@ gateway:
       enabled: true
       hostnames:
         - migration.example.com
-      path: /migration
-      pathType: PathPrefix
+      sectionName: https  # Use HTTPS listener
+      # Note: Specific paths (/status, /health, /start, /stop, /migrate, /discover, /indexes)
+      # are configured in app-gateway.yaml template for fine-grained routing
 
 # -----------------------------------------------------------------------------
 # External Secrets Configuration

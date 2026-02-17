@@ -336,6 +336,10 @@ spec:
     - name: http
       port: {{ .Values.sstableLoader.service.port }}
       targetPort: http
+    - name: api
+      port: {{ .Values.sstableLoader.service.apiPort | default .Values.sstableLoader.service.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
     - name: metrics
       port: {{ .Values.sstableLoader.service.metricsPort }}
       targetPort: metrics

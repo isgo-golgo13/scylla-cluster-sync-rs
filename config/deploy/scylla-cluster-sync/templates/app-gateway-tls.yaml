@@ -1,0 +1,57 @@
+{{- if and .Values.gateway.enabled .Values.gateway.tls.enabled }}
+
+{{- if .Values.gateway.tls.certManager.enabled }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ .Values.gateway.tls.secretName | default "scylla-sync-tls" }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "scylla-cluster-sync.labels" . | nindent 4 }}
+spec:
+  secretName: {{ .Values.gateway.tls.secretName | default "scylla-sync-tls" }}
+  issuerRef:
+    name: {{ .Values.gateway.tls.certManager.issuerName }}
+    kind: {{ .Values.gateway.tls.certManager.issuerKind | default "ClusterIssuer" }}
+    {{- if .Values.gateway.tls.certManager.issuerGroup }}
+    group: {{ .Values.gateway.tls.certManager.issuerGroup }}
+    {{- end }}
+  dnsNames:
+    {{- range .Values.gateway.tls.dnsNames }}
+    - {{ . | quote }}
+    {{- end }}
+    {{- if not .Values.gateway.tls.dnsNames }}
+    {{- range .Values.gateway.routes.sstableLoader.hostnames }}
+    - {{ . | quote }}
+    {{- end }}
+    {{- end }}
+  duration: {{ .Values.gateway.tls.certManager.duration | default "2160h" }}
+  renewBefore: {{ .Values.gateway.tls.certManager.renewBefore | default "360h" }}
+  privateKey:
+    algorithm: {{ .Values.gateway.tls.certManager.privateKey.algorithm | default "RSA" }}
+    size: {{ .Values.gateway.tls.certManager.privateKey.size | default 2048 }}
+{{- end }}
+
+{{- if and (not .Values.gateway.tls.certManager.enabled) (not .Values.gateway.tls.existingSecret) }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Values.gateway.tls.secretName | default "scylla-sync-tls" }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "scylla-cluster-sync.labels" . | nindent 4 }}
+type: kubernetes.io/tls
+data:
+  {{- if and .Values.gateway.tls.crt .Values.gateway.tls.key }}
+  tls.crt: {{ .Values.gateway.tls.crt | b64enc }}
+  tls.key: {{ .Values.gateway.tls.key | b64enc }}
+  {{- else }}
+  # Placeholder - replace with actual certificate data
+  tls.crt: ""
+  tls.key: ""
+  {{- end }}
+{{- end }}
+
+{{- end }}

@@ -156,6 +156,16 @@ gateway:
   name: production-gateway
   gatewayClassName: envoy-gateway
   
+  tls:
+    enabled: true
+    secretName: scylla-sync-tls
+    dnsNames:
+      - migration.prod.iconik.io
+    certManager:
+      enabled: true
+      issuerName: "letsencrypt-prod"
+      issuerKind: "ClusterIssuer"
+  
   routes:
     dualWriter:
       enabled: true
@@ -175,8 +185,9 @@ gateway:
       enabled: true
       hostnames:
         - migration.prod.iconik.io
-      path: /api/v1/migration
-      pathType: PathPrefix
+      sectionName: https
+      # Specific endpoints (/status, /health, /start, /stop, /migrate, /discover, /indexes)
+      # are routed in app-gateway.yaml template
 
 # -----------------------------------------------------------------------------
 # External Secrets Production
