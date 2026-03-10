@@ -2,8 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use dashmap::DashMap;
-use tracing::{info, error};
+use tracing::{info, warn, error};
 use uuid::Uuid;
+use chrono::Utc;
 
 use svckit::{
     types::{ValidationResult, Discrepancy},
@@ -17,6 +18,7 @@ use crate::reconciliation::{
     Reconciliator, ReconciliationStrategy, 
     SourceAuthoritativeStrategy, NewestTimestampStrategy, ManualReviewStrategy
 };
+use crate::filter::{DualReaderFilterGovernor, ReadDecision};
 
 pub struct DualReader {
     source_conn: Arc<ScyllaConnection>,
@@ -25,6 +27,8 @@ pub struct DualReader {
     discrepancies: Arc<DashMap<Uuid, Discrepancy>>,
     validator: Arc<Validator>,
     reconciliator: Arc<RwLock<Reconciliator>>,
+    /// Whitelist-based filter governor (Iconik client spec)
+    filter: Arc<DualReaderFilterGovernor>,
 }
 
 impl DualReader {
@@ -50,6 +54,14 @@ impl DualReader {
             source_conn.clone(),
             target_conn.clone(),
         );
+
+        // Build filter governor from config
+        let filter = Arc::new(DualReaderFilterGovernor::new(&config.filter));
+        if filter.is_enabled() {
+            info!("Dual-reader filtering enabled — selective comparison active");
+        } else {
+            info!("Dual-reader filtering disabled — all tables compared");
+        }
         
         Ok(Self {
             source_conn,
@@ -58,10 +70,32 @@ impl DualReader {
             discrepancies: Arc::new(DashMap::new()),
             validator,
             reconciliator: Arc::new(RwLock::new(reconciliator)),
+            filter,
         })
     }
     
+    /// Validate a table — applies table whitelist filter before proceeding.
+    ///
+    /// If the table is not in the compare_tables whitelist (when filtering is
+    /// enabled), this is a no-op: returns an empty ValidationResult and logs
+    /// a source-only notice. No dual read is performed.
     pub async fn validate_table(&self, table: &str) -> Result<ValidationResult, SyncError> {
+        // Apply filter — table-level check (no domain context at this call site)
+        let decision = self.filter.decide(table, None).await;
+        
+        if let ReadDecision::SourceOnly { reason } = decision {
+            warn!("⊘ Skipping comparison for '{}': {} — source only", table, reason);
+            return Ok(ValidationResult {
+                table: table.to_string(),
+                rows_checked: 0,
+                rows_matched: 0,
+                discrepancies: vec![],
+                consistency_percentage: 100.0,
+                validation_time: Utc::now(),
+                source_only: true,
+            });
+        }
+
         info!("Starting validation for table: {}", table);
         let start = std::time::Instant::now();
         
@@ -99,6 +133,74 @@ impl DualReader {
         
         Ok(result)
     }
+
+    /// Validate a table for a specific system_domain_id.
+    ///
+    /// Applies the full AND-gate filter: both table AND domain must be in their
+    /// respective whitelists for a dual read to proceed.
+    ///
+    /// This is the primary entry point for domain-scoped validation matching
+    /// the Iconik client filtering spec.
+    pub async fn validate_table_for_domain(
+        &self,
+        table: &str,
+        domain_id: &str,
+    ) -> Result<ValidationResult, SyncError> {
+        let decision = self.filter.decide(table, Some(domain_id)).await;
+
+        if let ReadDecision::SourceOnly { reason } = decision {
+            warn!(
+                "⊘ Skipping comparison for '{}' domain '{}': {} — source only",
+                table, domain_id, reason
+            );
+            return Ok(ValidationResult {
+                table: table.to_string(),
+                rows_checked: 0,
+                rows_matched: 0,
+                discrepancies: vec![],
+                consistency_percentage: 100.0,
+                validation_time: Utc::now(),
+                source_only: true,
+            });
+        }
+
+        info!("Starting domain-scoped validation: table={} domain={}", table, domain_id);
+        let start = std::time::Instant::now();
+
+        let config = self.config.read().await;
+        let sample_rate = config.reader.sample_rate;
+        let batch_size = config.reader.batch_size;
+        drop(config);
+
+        let result = self.validator.validate_table(
+            table,
+            sample_rate,
+            batch_size,
+        ).await?;
+
+        for discrepancy in &result.discrepancies {
+            self.discrepancies.insert(discrepancy.id, discrepancy.clone());
+        }
+
+        let duration = start.elapsed();
+        info!(
+            "Domain validation complete: table={} domain={} {}/{} rows matched ({:.2}%) in {:?}",
+            table, domain_id,
+            result.rows_matched,
+            result.rows_checked,
+            result.consistency_percentage,
+            duration
+        );
+
+        metrics::record_operation(
+            "validation_domain",
+            table,
+            result.discrepancies.is_empty(),
+            duration.as_secs_f64()
+        );
+
+        Ok(result)
+    }
     
     pub async fn validate_all_tables(&self) -> Result<Vec<ValidationResult>, SyncError> {
         let config = self.config.read().await;
@@ -132,10 +234,15 @@ impl DualReader {
                     let total_discrepancies: usize = results.iter()
                         .map(|r| r.discrepancies.len())
                         .sum();
+                    let source_only_count = results.iter()
+                        .filter(|r| r.source_only)
+                        .count();
                     
                     info!(
-                        "Validation cycle complete: {} tables validated, {} total discrepancies found",
+                        "Validation cycle complete: {} tables, {} compared, {} source-only, {} discrepancies",
                         results.len(),
+                        results.len() - source_only_count,
+                        source_only_count,
                         total_discrepancies
                     );
                 }
@@ -207,6 +314,16 @@ impl DualReader {
             .map_err(|e| SyncError::DatabaseError(format!("Target health check failed: {}", e)))?;
         
         Ok(())
+    }
+
+    /// Get filter statistics (for API/status endpoint)
+    pub fn get_filter_stats(&self) -> crate::filter::FilterStatsSummary {
+        self.filter.get_stats()
+    }
+
+    /// Whether filtering is currently active
+    pub fn is_filter_enabled(&self) -> bool {
+        self.filter.is_enabled()
     }
 }
 

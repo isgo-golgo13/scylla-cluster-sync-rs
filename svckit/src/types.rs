@@ -94,6 +94,9 @@ pub struct ValidationResult {
     pub discrepancies: Vec<Discrepancy>,
     pub consistency_percentage: f32,
     pub validation_time: DateTime<Utc>,
+    /// True when filter governor routed this table to source-only (no comparison performed)
+    #[serde(default)]
+    pub source_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

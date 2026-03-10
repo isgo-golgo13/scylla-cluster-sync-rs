@@ -97,6 +97,7 @@ impl Validator {
             discrepancies,
             consistency_percentage: consistency_percentage as f32,
             validation_time: Utc::now(),
+            source_only: false,
         })
     }
     

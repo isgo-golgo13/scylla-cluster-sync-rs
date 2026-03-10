@@ -19,10 +19,12 @@ pub async fn start_server(reader: Arc<DualReader>, port: u16) -> anyhow::Result<
     let app = Router::new()
         .route("/validate", post(handle_validate))
         .route("/validate/:table", post(handle_validate_table))
+        .route("/validate/:table/domain/:domain_id", post(handle_validate_table_domain))
         .route("/discrepancies", get(handle_get_discrepancies))
         .route("/discrepancies/:table", get(handle_get_table_discrepancies))
         .route("/discrepancies/clear", post(handle_clear_discrepancies))
         .route("/reconcile/:id", post(handle_reconcile))
+        .route("/filter/stats", get(handle_filter_stats))
         .route("/health", get(handle_health))
         .route("/status", get(handle_status))
         .route("/metrics", get(handle_metrics))
@@ -72,6 +74,33 @@ async fn handle_validate_table(
             "error": e.to_string(),
         }))).into_response(),
     }
+}
+
+/// Domain-scoped validation — applies full AND-gate filter (table + domain_id).
+/// POST /validate/:table/domain/:domain_id
+async fn handle_validate_table_domain(
+    State(reader): State<Arc<DualReader>>,
+    axum::extract::Path((table, domain_id)): axum::extract::Path<(String, String)>,
+) -> impl IntoResponse {
+    match reader.validate_table_for_domain(&table, &domain_id).await {
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+            "success": false,
+            "error": e.to_string(),
+        }))).into_response(),
+    }
+}
+
+/// Filter statistics — dual_reads vs source_only counts.
+/// GET /filter/stats
+async fn handle_filter_stats(
+    State(reader): State<Arc<DualReader>>,
+) -> impl IntoResponse {
+    let stats = reader.get_filter_stats();
+    Json(json!({
+        "filter_enabled": reader.is_filter_enabled(),
+        "stats": stats,
+    }))
 }
 
 async fn handle_get_discrepancies(

@@ -3,6 +3,7 @@ mod config;
 mod api;
 mod validator;
 mod reconciliation;
+mod filter;
 
 use anyhow::Result;
 use clap::Parser;

@@ -50,6 +50,34 @@ reader:
   auto_reconcile: false  # If true, automatically fix discrepancies
   reconciliation_mode: source_wins  # source_wins | newest_wins | manual
 
+# Iconik client filtering spec — selective dual reads
+# AND gate: table AND domain_id must both be in their whitelists for dual read
+# If either is absent → source only, no comparison
+filter:
+  enabled: false  # Set true to activate whitelist filtering
+
+  # Tables to compare (keyspace.table format)
+  # Tables NOT listed here → source only
+  compare_tables:
+    - "iconik.assets"
+    - "iconik.collections"
+    - "iconik.files"
+
+  # system_domain_ids to compare
+  # Domains NOT listed here → source only (they haven't been migrated yet)
+  compare_system_domain_ids: []
+  # Populate once domains are migrated to AWS target:
+  # compare_system_domain_ids:
+  #   - "domain-uuid-1"
+  #   - "domain-uuid-2"
+
+  # Column name for domain extraction
+  system_domain_id_column: "system_domain_id"
+
+  # JSONL discrepancy log
+  log_discrepancies: true
+  discrepancy_log_path: "discrepancies.jsonl"
+
 observability:
   metrics_port: 9091
   log_level: "info"
