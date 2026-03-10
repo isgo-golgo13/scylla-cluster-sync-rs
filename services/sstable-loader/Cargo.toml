@@ -5,6 +5,13 @@ edition = "2021"
 authors = ["Engine Vector <admin@enginevector.io>"]
 description = "High-performance SSTable bulk loader for ScyllaDB/Cassandra cluster migration"
 
+[features]
+default = []
+## Phase 2 optimizations: prepared statements + UNLOGGED batch inserts + concurrent inserts
+## Build with: cargo build --features optimized-inserts
+## Original code path is preserved and active when this feature is NOT set
+optimized-inserts = []
+
 [dependencies]
 # Workspace dependency
 svckit = { path = "../../svckit" }

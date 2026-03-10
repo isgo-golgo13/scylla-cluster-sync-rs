@@ -67,6 +67,23 @@ loader:
   skip_on_error: false  # If true, skip rows that fail to migrate
   failed_rows_file: "failed_rows.jsonl"  # JSONL file for logging skipped rows (when skip_on_error=true)
 
+  # ---------------------------------------------------------------------------
+  # Phase 2 optimization parameters
+  # Only active when binary is built with: --features optimized-inserts
+  # Ignored entirely in default/production builds (no code path change)
+  # ---------------------------------------------------------------------------
+  #
+  # insert_batch_size: rows per UNLOGGED BATCH round-trip
+  #   - 1   = no batching, use concurrent prepared statements instead
+  #   - 100 = recommended starting point (50-200 range)
+  #   - Tune down if you see "batch too large" errors from ScyllaDB
+  insert_batch_size: 100
+  #
+  # insert_concurrency: max in-flight inserts within a token range
+  #   - Only active when insert_batch_size == 1 (concurrent single-row path)
+  #   - 32 = recommended starting point
+  insert_concurrency: 32
+
 observability:
   metrics_port: 9092
   log_level: "info"

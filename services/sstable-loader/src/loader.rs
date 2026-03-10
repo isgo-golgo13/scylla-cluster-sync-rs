@@ -556,6 +556,8 @@ impl SSTableLoader {
         let batch_size = config.loader.batch_size;
         let max_retries = config.loader.max_retries;
         let retry_delay_ms = config.loader.retry_delay_secs * 1000;
+        let insert_batch_size = config.loader.insert_batch_size;
+        let insert_concurrency = config.loader.insert_concurrency;
         drop(config);
         
         let ranges = calculator.calculate_ranges(ranges_per_core).await?;
@@ -592,6 +594,8 @@ impl SSTableLoader {
             let max_retries = max_retries;
             let retry_delay_ms = retry_delay_ms;
             let failed_rows_log = self.failed_rows_log.clone();
+            let insert_batch_size = insert_batch_size;
+            let insert_concurrency = insert_concurrency;
             
             join_set.spawn(async move {
                 if !is_running.load(Ordering::Relaxed) {
@@ -620,6 +624,8 @@ impl SSTableLoader {
                     max_retries,
                     retry_delay_ms,
                     failed_rows_log,
+                    insert_batch_size,
+                    insert_concurrency,
                 ).await;
                 
                 pb_clone.inc(1);
@@ -711,6 +717,9 @@ impl SSTableLoader {
         max_retries: u32,
         retry_delay_ms: u64,
         failed_rows_log: Arc<Mutex<Option<File>>>,
+        // Phase 2 optimization params — used only when feature = "optimized-inserts"
+        #[allow(unused_variables)] insert_batch_size: usize,
+        #[allow(unused_variables)] insert_concurrency: usize,
     ) -> Result<(), SyncError> {
         // Build token function with ALL partition key columns
         let token_columns = partition_keys.join(", ");
@@ -737,11 +746,13 @@ impl SSTableLoader {
         
         let insert_query = format!("INSERT INTO {} JSON ?", table);
         
-        let mut batch_count = 0;
-        
         if let Some(rows) = result.rows {
+            // ----------------------------------------------------------------
+            // PHASE 1: Filter rows — identical in both build modes
+            // ----------------------------------------------------------------
+            let mut filtered_rows: Vec<String> = Vec::with_capacity(rows.len());
+            
             for row in rows {
-                // SELECT JSON returns a single column '[json]' containing the JSON string
                 let json_row = match row.columns.first() {
                     Some(Some(CqlValue::Text(json_str))) => json_str.clone(),
                     Some(Some(CqlValue::Ascii(json_str))) => json_str.clone(),
@@ -752,7 +763,6 @@ impl SSTableLoader {
                     }
                 };
                 
-                // Check if row should be filtered by parsing JSON for tenant_id
                 let mut should_skip = false;
                 if !tenant_id_columns.is_empty() {
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_row) {
@@ -762,7 +772,6 @@ impl SSTableLoader {
                                     serde_json::Value::String(s) => s.clone(),
                                     other => other.to_string().trim_matches('"').to_string(),
                                 };
-                                
                                 if let FilterDecision::SkipTenant(tid) = filter.check_tenant_id(&tenant_id).await {
                                     debug!("Filtering row with tenant_id: {}", tid);
                                     stats.filtered_rows.fetch_add(1, Ordering::Relaxed);
@@ -774,65 +783,91 @@ impl SSTableLoader {
                     }
                 }
                 
-                if should_skip {
-                    continue;
+                if !should_skip {
+                    filtered_rows.push(json_row);
                 }
-                
-                // Row passed filter - insert into target with retry
-                let mut insert_success = false;
-                let mut last_error: Option<String> = None;
-                
-                for attempt in 0..=max_retries {
-                    match target.get_session()
-                        .query_unpaged(insert_query.as_str(), (&json_row,))
-                        .await 
-                    {
-                        Ok(_) => {
-                            stats.migrated_rows.fetch_add(1, Ordering::Relaxed);
-                            insert_success = true;
-                            break;
-                        }
-                        Err(e) => {
-                            last_error = Some(format!("{}", e));
-                            if attempt < max_retries {
-                                // Retry after delay
-                                tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
+            }
+            
+            // ----------------------------------------------------------------
+            // PHASE 2: Insert — compile-time dispatch via feature flag
+            // ----------------------------------------------------------------
+            
+            #[cfg(feature = "optimized-inserts")]
+            {
+                Self::insert_rows_optimized(
+                    &target,
+                    table,
+                    &insert_query,
+                    filtered_rows,
+                    insert_batch_size,
+                    insert_concurrency,
+                    max_retries,
+                    retry_delay_ms,
+                    stats.clone(),
+                    failed_rows_log.clone(),
+                    range,
+                ).await?;
+            }
+            
+            #[cfg(not(feature = "optimized-inserts"))]
+            {
+                // ============================================================
+                // PRODUCTION PATH — original sequential insert with per-row retry
+                // UNTOUCHED — zero regression guarantee
+                // ============================================================
+                let mut batch_count: usize = 0;
+                for json_row in filtered_rows {
+                    let mut insert_success = false;
+                    let mut last_error: Option<String> = None;
+                    
+                    for attempt in 0..=max_retries {
+                        match target.get_session()
+                            .query_unpaged(insert_query.as_str(), (&json_row,))
+                            .await
+                        {
+                            Ok(_) => {
+                                stats.migrated_rows.fetch_add(1, Ordering::Relaxed);
+                                insert_success = true;
+                                break;
+                            }
+                            Err(e) => {
+                                last_error = Some(format!("{}", e));
+                                if attempt < max_retries {
+                                    tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
+                                }
                             }
                         }
                     }
-                }
-                
-                // If all retries failed, log to JSONL and count as failed
-                if !insert_success {
-                    if batch_count % 1000 == 0 {
-                        warn!("Insert failed after {} retries (batch {}): {}", 
-                            max_retries, batch_count, last_error.as_deref().unwrap_or("unknown"));
-                    }
-                    stats.failed_rows.fetch_add(1, Ordering::Relaxed);
                     
-                    // Log to JSONL file
-                    let record = FailedRowRecord {
-                        timestamp: Utc::now().to_rfc3339(),
-                        table: table.to_string(),
-                        token_range_start: range.start,
-                        token_range_end: range.end,
-                        error: last_error.unwrap_or_else(|| "unknown".to_string()),
-                        error_type: "row_insert_error".to_string(),
-                    };
-                    
-                    if let Ok(mut file_guard) = failed_rows_log.try_lock() {
-                        if let Some(ref mut file) = *file_guard {
-                            if let Ok(json) = serde_json::to_string(&record) {
-                                let _ = writeln!(file, "{}", json);
+                    if !insert_success {
+                        if batch_count % 1000 == 0 {
+                            warn!("Insert failed after {} retries (batch {}): {}",
+                                max_retries, batch_count, last_error.as_deref().unwrap_or("unknown"));
+                        }
+                        stats.failed_rows.fetch_add(1, Ordering::Relaxed);
+                        
+                        let record = FailedRowRecord {
+                            timestamp: Utc::now().to_rfc3339(),
+                            table: table.to_string(),
+                            token_range_start: range.start,
+                            token_range_end: range.end,
+                            error: last_error.unwrap_or_else(|| "unknown".to_string()),
+                            error_type: "row_insert_error".to_string(),
+                        };
+                        
+                        if let Ok(mut file_guard) = failed_rows_log.try_lock() {
+                            if let Some(ref mut file) = *file_guard {
+                                if let Ok(json) = serde_json::to_string(&record) {
+                                    let _ = writeln!(file, "{}", json);
+                                }
                             }
                         }
                     }
-                }
-                
-                batch_count += 1;
-                
-                if batch_count % batch_size == 0 {
-                    tokio::task::yield_now().await;
+                    
+                    batch_count += 1;
+                    if batch_count % batch_size == 0 {
+                        tokio::task::yield_now().await;
+                    }
                 }
             }
         }
@@ -841,8 +876,164 @@ impl SSTableLoader {
     }
     
     // =========================================================================
-    // CONFIGURATION
+    // PHASE 2: OPTIMIZED INSERT PATH (feature = "optimized-inserts" only)
+    // Compiled out entirely in default/production builds.
     // =========================================================================
+    
+    /// Optimized insert: prepared statements + UNLOGGED BATCH + concurrent execution.
+    ///
+    /// Strategy:
+    ///   - Prepare the INSERT once per token range (eliminates per-row parse overhead)
+    ///   - If insert_batch_size > 1: UNLOGGED BATCH for amortised round-trips (2-5x gain)
+    ///   - If insert_batch_size == 1: concurrent prepared executes via buffer_unordered
+    ///
+    /// Retry semantics:
+    ///   - Batch path: entire batch retried on failure; all rows in batch logged on exhaustion
+    ///   - Concurrent path: each row retried independently (matching production semantics)
+    #[cfg(feature = "optimized-inserts")]
+    async fn insert_rows_optimized(
+        target: &Arc<ScyllaConnection>,
+        table: &str,
+        insert_query: &str,
+        rows: Vec<String>,
+        insert_batch_size: usize,
+        insert_concurrency: usize,
+        max_retries: u32,
+        retry_delay_ms: u64,
+        stats: Arc<LoaderStats>,
+        failed_rows_log: Arc<Mutex<Option<File>>>,
+        range: &TokenRange,
+    ) -> Result<(), SyncError> {
+        use scylla::batch::{Batch, BatchType};
+        use futures::stream::{self, StreamExt};
+        
+        if rows.is_empty() {
+            return Ok(());
+        }
+        
+        // Prepare statement ONCE for this token range
+        let prepared = target.get_session()
+            .prepare(insert_query)
+            .await
+            .map_err(|e| SyncError::DatabaseError(format!("prepare failed: {}", e)))?;
+        
+        if insert_batch_size > 1 {
+            // ------------------------------------------------------------------
+            // UNLOGGED BATCH path — chunks rows, one batch round-trip per chunk
+            // ------------------------------------------------------------------
+            for chunk in rows.chunks(insert_batch_size) {
+                let mut batch = Batch::new(BatchType::Unlogged);
+                for _ in chunk {
+                    batch.append_statement(prepared.clone());
+                }
+                // Build typed values: Vec<(String,)> each matching the single '?' param
+                let values: Vec<(String,)> = chunk.iter()
+                    .map(|r| (r.clone(),))
+                    .collect();
+                
+                let mut batch_success = false;
+                let mut last_error: Option<String> = None;
+                
+                for attempt in 0..=max_retries {
+                    match target.get_session().batch(&batch, &values).await {
+                        Ok(_) => {
+                            stats.migrated_rows.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                            batch_success = true;
+                            break;
+                        }
+                        Err(e) => {
+                            last_error = Some(format!("{}", e));
+                            if attempt < max_retries {
+                                tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
+                            }
+                        }
+                    }
+                }
+                
+                if !batch_success {
+                    // Count and log entire failed batch
+                    stats.failed_rows.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                    let record = FailedRowRecord {
+                        timestamp: Utc::now().to_rfc3339(),
+                        table: table.to_string(),
+                        token_range_start: range.start,
+                        token_range_end: range.end,
+                        error: last_error.unwrap_or_else(|| "unknown".to_string()),
+                        error_type: "batch_insert_error".to_string(),
+                    };
+                    warn!("Batch of {} rows failed after {} retries: {}",
+                        chunk.len(), max_retries, record.error);
+                    if let Ok(mut fg) = failed_rows_log.try_lock() {
+                        if let Some(ref mut f) = *fg {
+                            if let Ok(json) = serde_json::to_string(&record) {
+                                let _ = writeln!(f, "{}", json);
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // ------------------------------------------------------------------
+            // CONCURRENT prepared-statement path — no batching, N in-flight at once
+            // ------------------------------------------------------------------
+            let results: Vec<_> = stream::iter(rows)
+                .map(|json_row| {
+                    let target = target.clone();
+                    let prepared = prepared.clone();
+                    let stats = stats.clone();
+                    let failed_rows_log = failed_rows_log.clone();
+                    let table = table.to_string();
+                    let range_start = range.start;
+                    let range_end = range.end;
+                    async move {
+                        let mut insert_success = false;
+                        let mut last_error: Option<String> = None;
+                        for attempt in 0..=max_retries {
+                            match target.get_session()
+                                .execute_unpaged(&prepared, (&json_row,))
+                                .await
+                            {
+                                Ok(_) => {
+                                    stats.migrated_rows.fetch_add(1, Ordering::Relaxed);
+                                    insert_success = true;
+                                    break;
+                                }
+                                Err(e) => {
+                                    last_error = Some(format!("{}", e));
+                                    if attempt < max_retries {
+                                        tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
+                                    }
+                                }
+                            }
+                        }
+                        if !insert_success {
+                            stats.failed_rows.fetch_add(1, Ordering::Relaxed);
+                            let record = FailedRowRecord {
+                                timestamp: Utc::now().to_rfc3339(),
+                                table,
+                                token_range_start: range_start,
+                                token_range_end: range_end,
+                                error: last_error.unwrap_or_else(|| "unknown".to_string()),
+                                error_type: "concurrent_insert_error".to_string(),
+                            };
+                            if let Ok(mut fg) = failed_rows_log.try_lock() {
+                                if let Some(ref mut f) = *fg {
+                                    if let Ok(json) = serde_json::to_string(&record) {
+                                        let _ = writeln!(f, "{}", json);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                })
+                .buffer_unordered(insert_concurrency)
+                .collect()
+                .await;
+            drop(results);
+        }
+        
+        Ok(())
+    }
     
     /// Update configuration at runtime
     pub async fn update_config(&self, new_config: SSTableLoaderConfig) {

@@ -15,13 +15,21 @@ BUILDX_BUILDER := multiarch
 # Build Targets
 # =============================================================================
 
-.PHONY: build build-release
+.PHONY: build build-release build-optimized build-optimized-release
 
 build:
 	cargo build --workspace
 
 build-release:
 	cargo build --release --workspace
+
+## Phase 2 optimized builds for sstable-loader (prepared stmts + UNLOGGED BATCH + concurrent inserts)
+## Original code path is preserved in default builds — these are additive only
+build-optimized:
+	cargo build -p sstable-loader --features optimized-inserts
+
+build-optimized-release:
+	cargo build -p sstable-loader --release --features optimized-inserts
 
 # =============================================================================
 # Docker Buildx Setup
@@ -123,6 +131,32 @@ docker-release-sstable-loader: docker-setup
 		-f services/sstable-loader/Dockerfile.sstable-loader \
 		-t $(DOCKER_REGISTRY)/sstable-loader:$(VERSION) \
 		-t $(DOCKER_REGISTRY)/sstable-loader:latest \
+		--push .
+
+# =============================================================================
+# Phase 2 Optimized Docker Targets (sstable-loader only)
+# Builds with --features optimized-inserts: prepared stmts + UNLOGGED BATCH
+# Images tagged with -optimized suffix to coexist with production images
+# =============================================================================
+
+.PHONY: docker-build-sstable-loader-optimized docker-release-sstable-loader-optimized
+
+## Local load only (for testing before push)
+docker-build-sstable-loader-optimized: docker-setup
+	@echo "Building sstable-loader (Phase 2 optimized) for $(PLATFORM)..."
+	docker buildx build --platform $(PLATFORM) \
+		-f services/sstable-loader/Dockerfile.sstable-loader-optimized \
+		-t $(DOCKER_REGISTRY)/sstable-loader:$(VERSION)-optimized \
+		-t $(DOCKER_REGISTRY)/sstable-loader:optimized \
+		--load .
+
+## Build + push optimized image (GKE/EKS deployment)
+docker-release-sstable-loader-optimized: docker-setup
+	@echo "Building and pushing sstable-loader (Phase 2 optimized) for $(PLATFORM)..."
+	docker buildx build --platform $(PLATFORM) \
+		-f services/sstable-loader/Dockerfile.sstable-loader-optimized \
+		-t $(DOCKER_REGISTRY)/sstable-loader:$(VERSION)-optimized \
+		-t $(DOCKER_REGISTRY)/sstable-loader:optimized \
 		--push .
 
 # =============================================================================

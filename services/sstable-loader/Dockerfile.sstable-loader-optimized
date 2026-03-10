@@ -1,0 +1,32 @@
+# Build image
+FROM rust:1.83-bookworm AS builder
+
+WORKDIR /app
+
+# Copy workspace manifests
+COPY Cargo.toml Cargo.lock ./
+
+# Copy shared library
+COPY svckit ./svckit
+
+# Copy ALL services (workspace requires all members)
+COPY services/dual-writer ./services/dual-writer
+COPY services/dual-reader ./services/dual-reader
+COPY services/sstable-loader ./services/sstable-loader
+
+# Build only the sstable-loader binary — Phase 2 optimized (prepared stmts + UNLOGGED BATCH)
+RUN cargo build --release --bin sstable-loader --features optimized-inserts
+
+# Runtime image
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/sstable-loader /usr/local/bin/
+
+EXPOSE 8081 9092
+
+ENTRYPOINT ["sstable-loader"]

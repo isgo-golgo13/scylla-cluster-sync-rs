@@ -28,10 +28,27 @@ pub struct LoaderConfig {
     /// Path to JSONL file for logging failed/corrupted rows (optional)
     #[serde(default = "default_failed_rows_file")]
     pub failed_rows_file: String,
+    // -------------------------------------------------------------------------
+    // Phase 2 optimization fields (only active with --features optimized-inserts)
+    // -------------------------------------------------------------------------
+    /// Number of rows per UNLOGGED BATCH insert (default: 100, range: 50-200)
+    #[serde(default = "default_insert_batch_size")]
+    pub insert_batch_size: usize,
+    /// Max concurrent in-flight inserts within a token range (default: 32)
+    #[serde(default = "default_insert_concurrency")]
+    pub insert_concurrency: usize,
 }
 
 fn default_failed_rows_file() -> String {
     "failed_rows.jsonl".to_string()
+}
+
+fn default_insert_batch_size() -> usize {
+    100
+}
+
+fn default_insert_concurrency() -> usize {
+    32
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
