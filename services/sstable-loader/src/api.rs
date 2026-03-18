@@ -5,11 +5,13 @@
 
 use axum::{
     extract::State,
+    response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
 
 use anyhow::Result;
+use prometheus::{Encoder, TextEncoder};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{info, error};
@@ -78,6 +80,7 @@ pub async fn start_server(
         // Health & Status
         .route("/health", get(health_check))
         .route("/status", get(migration_status))
+        .route("/metrics", get(handle_metrics))
         
         // Migration endpoints
         .route("/start", post(start_migration))
@@ -460,4 +463,14 @@ async fn discover_tables(
             }))
         }
     }
+}
+pub async fn handle_metrics() -> impl IntoResponse {
+    let encoder = TextEncoder::new();
+    let metric_families = prometheus::gather();
+    let mut buffer = Vec::new();
+    encoder.encode(&metric_families, &mut buffer).unwrap_or_default();
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+        String::from_utf8(buffer).unwrap_or_default(),
+    )
 }
