@@ -84,6 +84,25 @@ loader:
   #   - 32 = recommended starting point
   insert_concurrency: 32
 
+  # ---------------------------------------------------------------------------
+  # Paginated source reads (runtime flag — default OFF = zero behavior change)
+  # ---------------------------------------------------------------------------
+  #
+  # enable_pagination: set true to page through large token ranges instead of
+  #   issuing one unpaged query. Prevents timeout crashes on large tables.
+  #   false (default) = original query_unpaged behavior, guaranteed zero regression.
+  enable_pagination: false
+  #
+  # page_size: rows per page when enable_pagination = true (default: 5000)
+  #   Tune down if individual pages still timeout; tune up for fewer round-trips.
+  page_size: 5000
+  #
+  # page_retry_attempts: retries per page fetch on timeout/error (default: 3)
+  page_retry_attempts: 3
+  #
+  # page_retry_backoff_ms: backoff between page retries in ms (default: 500)
+  page_retry_backoff_ms: 500
+
 observability:
   metrics_port: 9092
   log_level: "info"

@@ -37,6 +37,24 @@ pub struct LoaderConfig {
     /// Max concurrent in-flight inserts within a token range (default: 32)
     #[serde(default = "default_insert_concurrency")]
     pub insert_concurrency: usize,
+    // -------------------------------------------------------------------------
+    // Paginated source reads (runtime flag — default OFF = zero behavior change)
+    // -------------------------------------------------------------------------
+    /// Enable paginated reads over token ranges.
+    /// false (default) = existing query_unpaged behavior, zero regression.
+    /// true            = driver-level paging with per-page retry, prevents
+    ///                   timeout crashes on large token ranges.
+    #[serde(default)]
+    pub enable_pagination: bool,
+    /// Rows per page when enable_pagination = true (default: 5000)
+    #[serde(default = "default_page_size")]
+    pub page_size: usize,
+    /// Max retries per page fetch on timeout/error (default: 3)
+    #[serde(default = "default_page_retry_attempts")]
+    pub page_retry_attempts: u32,
+    /// Backoff between page retries in milliseconds (default: 500)
+    #[serde(default = "default_page_retry_backoff_ms")]
+    pub page_retry_backoff_ms: u64,
 }
 
 fn default_failed_rows_file() -> String {
@@ -49,6 +67,18 @@ fn default_insert_batch_size() -> usize {
 
 fn default_insert_concurrency() -> usize {
     32
+}
+
+fn default_page_size() -> usize {
+    5000
+}
+
+fn default_page_retry_attempts() -> u32 {
+    3
+}
+
+fn default_page_retry_backoff_ms() -> u64 {
+    500
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

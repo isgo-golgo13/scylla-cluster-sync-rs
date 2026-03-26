@@ -558,6 +558,10 @@ impl SSTableLoader {
         let retry_delay_ms = config.loader.retry_delay_secs * 1000;
         let insert_batch_size = config.loader.insert_batch_size;
         let insert_concurrency = config.loader.insert_concurrency;
+        let enable_pagination = config.loader.enable_pagination;
+        let page_size = config.loader.page_size;
+        let page_retry_attempts = config.loader.page_retry_attempts;
+        let page_retry_backoff_ms = config.loader.page_retry_backoff_ms;
         drop(config);
         
         let ranges = calculator.calculate_ranges(ranges_per_core).await?;
@@ -596,6 +600,10 @@ impl SSTableLoader {
             let failed_rows_log = self.failed_rows_log.clone();
             let insert_batch_size = insert_batch_size;
             let insert_concurrency = insert_concurrency;
+            let enable_pagination = enable_pagination;
+            let page_size = page_size;
+            let page_retry_attempts = page_retry_attempts;
+            let page_retry_backoff_ms = page_retry_backoff_ms;
             
             join_set.spawn(async move {
                 if !is_running.load(Ordering::Relaxed) {
@@ -626,6 +634,10 @@ impl SSTableLoader {
                     failed_rows_log,
                     insert_batch_size,
                     insert_concurrency,
+                    enable_pagination,
+                    page_size,
+                    page_retry_attempts,
+                    page_retry_backoff_ms,
                 ).await;
                 
                 pb_clone.inc(1);
@@ -720,158 +732,297 @@ impl SSTableLoader {
         // Phase 2 optimization params — used only when feature = "optimized-inserts"
         #[allow(unused_variables)] insert_batch_size: usize,
         #[allow(unused_variables)] insert_concurrency: usize,
+        // Pagination params — runtime flag, default false = zero behavior change
+        enable_pagination: bool,
+        page_size: usize,
+        page_retry_attempts: u32,
+        page_retry_backoff_ms: u64,
     ) -> Result<(), SyncError> {
+        use std::ops::ControlFlow;
+        use scylla::query::Query;
+        use scylla::statement::PagingState;
+
         // Build token function with ALL partition key columns
         let token_columns = partition_keys.join(", ");
-        
-        // FIX #5: Use SELECT JSON to bypass driver deserialization of complex UDTs
-        // This returns a single '[json]' column with the row as a JSON string,
-        // avoiding driver issues with List<frozen<UDT>> containing nested collections
-        let query = format!(
+
+        // SELECT JSON bypasses driver deserialization of complex UDTs
+        let query_str = format!(
             "SELECT JSON * FROM {} WHERE token({}) >= {} AND token({}) <= {}",
             table, token_columns, range.start, token_columns, range.end
         );
-        
-        let result = source.get_session()
-            .query_unpaged(query.as_str(), &[])
-            .await
-            .map_err(|e| SyncError::DatabaseError(format!("Source query failed: {}", e)))?;
-        
-        let row_count = result.rows_num().unwrap_or(0);
-        if row_count == 0 {
+
+        let insert_query = format!("INSERT INTO {} JSON ?", table);
+
+        // -------------------------------------------------------------------------
+        // SOURCE READ — two paths, identical filtered_rows output, same insert below
+        // -------------------------------------------------------------------------
+
+        let filtered_rows: Vec<String> = if enable_pagination {
+            // =================================================================
+            // PAGINATED PATH — driver-level paging with per-page retry.
+            // Activated only when enable_pagination = true in config.
+            // Prevents timeout crashes on large token ranges.
+            // enable_pagination = false (default) never enters this branch.
+            // =================================================================
+            let mut query_obj = Query::new(query_str.as_str());
+            query_obj.set_page_size(page_size as i32);
+
+            let mut paging_state = PagingState::start();
+            let mut all_filtered: Vec<String> = Vec::new();
+            let mut total_row_count: u64 = 0;
+            let mut page_num: u32 = 0;
+
+            loop {
+                let mut page_result = None;
+                let mut next_paging_state: Option<PagingState> = None;
+
+                // Per-page retry loop
+                for attempt in 0..=page_retry_attempts {
+                    match source
+                        .get_session()
+                        .query_single_page(query_obj.clone(), &[], paging_state.clone())
+                        .await
+                    {
+                        Ok((result, paging_state_response)) => {
+                            match paging_state_response.into_paging_control_flow() {
+                                ControlFlow::Continue(new_state) => {
+                                    next_paging_state = Some(new_state);
+                                }
+                                ControlFlow::Break(()) => {
+                                    next_paging_state = None;
+                                }
+                            }
+                            page_result = Some(result);
+                            break;
+                        }
+                        Err(e) => {
+                            if attempt < page_retry_attempts {
+                                warn!(
+                                    "Page {} fetch attempt {}/{} failed: {} — retrying in {}ms",
+                                    page_num,
+                                    attempt + 1,
+                                    page_retry_attempts,
+                                    e,
+                                    page_retry_backoff_ms
+                                );
+                                tokio::time::sleep(Duration::from_millis(page_retry_backoff_ms)).await;
+                            } else {
+                                return Err(SyncError::DatabaseError(format!(
+                                    "Page {} fetch failed after {} retries: {}",
+                                    page_num, page_retry_attempts, e
+                                )));
+                            }
+                        }
+                    }
+                }
+
+                if let Some(result) = page_result {
+                    let row_count = result.rows_num().unwrap_or(0);
+                    total_row_count += row_count as u64;
+
+                    if let Some(rows) = result.rows {
+                        for row in rows {
+                            let json_row = match row.columns.first() {
+                                Some(Some(CqlValue::Text(s))) => s.clone(),
+                                Some(Some(CqlValue::Ascii(s))) => s.clone(),
+                                _ => {
+                                    warn!("Unexpected row format from SELECT JSON (page {})", page_num);
+                                    stats.failed_rows.fetch_add(1, Ordering::Relaxed);
+                                    continue;
+                                }
+                            };
+
+                            let mut should_skip = false;
+                            if !tenant_id_columns.is_empty() {
+                                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_row) {
+                                    for tenant_col in tenant_id_columns {
+                                        if let Some(tenant_val) = parsed.get(tenant_col) {
+                                            let tenant_id = match tenant_val {
+                                                serde_json::Value::String(s) => s.clone(),
+                                                other => other.to_string().trim_matches('"').to_string(),
+                                            };
+                                            if let FilterDecision::SkipTenant(tid) =
+                                                filter.check_tenant_id(&tenant_id).await
+                                            {
+                                                debug!("Filtering row with tenant_id: {}", tid);
+                                                stats.filtered_rows.fetch_add(1, Ordering::Relaxed);
+                                                should_skip = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if !should_skip {
+                                all_filtered.push(json_row);
+                            }
+                        }
+                    }
+                    debug!("Page {} fetched: {} rows (range {} → {})", page_num, row_count, range.start, range.end);
+                }
+
+                page_num += 1;
+                match next_paging_state {
+                    Some(new_state) => paging_state = new_state,
+                    None => break,
+                }
+            }
+
+            stats.total_rows.fetch_add(total_row_count, Ordering::Relaxed);
+            if total_row_count == 0 {
+                return Ok(());
+            }
+
+            all_filtered
+
+        } else {
+            // =================================================================
+            // ORIGINAL UNPAGED PATH — byte-for-byte identical to previous code.
+            // Default when enable_pagination = false.
+            // ZERO REGRESSION GUARANTEE.
+            // =================================================================
+            let result = source.get_session()
+                .query_unpaged(query_str.as_str(), &[])
+                .await
+                .map_err(|e| SyncError::DatabaseError(format!("Source query failed: {}", e)))?;
+
+            let row_count = result.rows_num().unwrap_or(0);
+            if row_count == 0 {
+                return Ok(());
+            }
+
+            stats.total_rows.fetch_add(row_count as u64, Ordering::Relaxed);
+
+            let mut filtered: Vec<String> = Vec::with_capacity(row_count);
+
+            if let Some(rows) = result.rows {
+                for row in rows {
+                    let json_row = match row.columns.first() {
+                        Some(Some(CqlValue::Text(json_str))) => json_str.clone(),
+                        Some(Some(CqlValue::Ascii(json_str))) => json_str.clone(),
+                        _ => {
+                            warn!("Unexpected row format from SELECT JSON");
+                            stats.failed_rows.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+                    };
+
+                    let mut should_skip = false;
+                    if !tenant_id_columns.is_empty() {
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_row) {
+                            for tenant_col in tenant_id_columns {
+                                if let Some(tenant_val) = parsed.get(tenant_col) {
+                                    let tenant_id = match tenant_val {
+                                        serde_json::Value::String(s) => s.clone(),
+                                        other => other.to_string().trim_matches('"').to_string(),
+                                    };
+                                    if let FilterDecision::SkipTenant(tid) = filter.check_tenant_id(&tenant_id).await {
+                                        debug!("Filtering row with tenant_id: {}", tid);
+                                        stats.filtered_rows.fetch_add(1, Ordering::Relaxed);
+                                        should_skip = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if !should_skip {
+                        filtered.push(json_row);
+                    }
+                }
+            }
+
+            filtered
+        };
+
+        // -------------------------------------------------------------------------
+        // INSERT DISPATCH — identical for both read paths, untouched from original
+        // -------------------------------------------------------------------------
+
+        if filtered_rows.is_empty() {
             return Ok(());
         }
-        
-        stats.total_rows.fetch_add(row_count as u64, Ordering::Relaxed);
-        
-        let insert_query = format!("INSERT INTO {} JSON ?", table);
-        
-        if let Some(rows) = result.rows {
-            // ----------------------------------------------------------------
-            // PHASE 1: Filter rows — identical in both build modes
-            // ----------------------------------------------------------------
-            let mut filtered_rows: Vec<String> = Vec::with_capacity(rows.len());
-            
-            for row in rows {
-                let json_row = match row.columns.first() {
-                    Some(Some(CqlValue::Text(json_str))) => json_str.clone(),
-                    Some(Some(CqlValue::Ascii(json_str))) => json_str.clone(),
-                    _ => {
-                        warn!("Unexpected row format from SELECT JSON");
-                        stats.failed_rows.fetch_add(1, Ordering::Relaxed);
-                        continue;
-                    }
-                };
-                
-                let mut should_skip = false;
-                if !tenant_id_columns.is_empty() {
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_row) {
-                        for tenant_col in tenant_id_columns {
-                            if let Some(tenant_val) = parsed.get(tenant_col) {
-                                let tenant_id = match tenant_val {
-                                    serde_json::Value::String(s) => s.clone(),
-                                    other => other.to_string().trim_matches('"').to_string(),
-                                };
-                                if let FilterDecision::SkipTenant(tid) = filter.check_tenant_id(&tenant_id).await {
-                                    debug!("Filtering row with tenant_id: {}", tid);
-                                    stats.filtered_rows.fetch_add(1, Ordering::Relaxed);
-                                    should_skip = true;
-                                    break;
-                                }
+
+        #[cfg(feature = "optimized-inserts")]
+        {
+            Self::insert_rows_optimized(
+                &target,
+                table,
+                &insert_query,
+                filtered_rows,
+                insert_batch_size,
+                insert_concurrency,
+                max_retries,
+                retry_delay_ms,
+                stats.clone(),
+                failed_rows_log.clone(),
+                range,
+            ).await?;
+        }
+
+        #[cfg(not(feature = "optimized-inserts"))]
+        {
+            // ============================================================
+            // PRODUCTION PATH — original sequential insert with per-row retry
+            // UNTOUCHED — zero regression guarantee
+            // ============================================================
+            let mut batch_count: usize = 0;
+            for json_row in filtered_rows {
+                let mut insert_success = false;
+                let mut last_error: Option<String> = None;
+
+                for attempt in 0..=max_retries {
+                    match target.get_session()
+                        .query_unpaged(insert_query.as_str(), (&json_row,))
+                        .await
+                    {
+                        Ok(_) => {
+                            stats.migrated_rows.fetch_add(1, Ordering::Relaxed);
+                            insert_success = true;
+                            break;
+                        }
+                        Err(e) => {
+                            last_error = Some(format!("{}", e));
+                            if attempt < max_retries {
+                                tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
                             }
                         }
                     }
                 }
-                
-                if !should_skip {
-                    filtered_rows.push(json_row);
+
+                if !insert_success {
+                    if batch_count % 1000 == 0 {
+                        warn!("Insert failed after {} retries (batch {}): {}",
+                            max_retries, batch_count, last_error.as_deref().unwrap_or("unknown"));
+                    }
+                    stats.failed_rows.fetch_add(1, Ordering::Relaxed);
+
+                    let record = FailedRowRecord {
+                        timestamp: Utc::now().to_rfc3339(),
+                        table: table.to_string(),
+                        token_range_start: range.start,
+                        token_range_end: range.end,
+                        error: last_error.unwrap_or_else(|| "unknown".to_string()),
+                        error_type: "row_insert_error".to_string(),
+                    };
+
+                    if let Ok(mut file_guard) = failed_rows_log.try_lock() {
+                        if let Some(ref mut file) = *file_guard {
+                            if let Ok(json) = serde_json::to_string(&record) {
+                                let _ = writeln!(file, "{}", json);
+                            }
+                        }
+                    }
                 }
-            }
-            
-            // ----------------------------------------------------------------
-            // PHASE 2: Insert — compile-time dispatch via feature flag
-            // ----------------------------------------------------------------
-            
-            #[cfg(feature = "optimized-inserts")]
-            {
-                Self::insert_rows_optimized(
-                    &target,
-                    table,
-                    &insert_query,
-                    filtered_rows,
-                    insert_batch_size,
-                    insert_concurrency,
-                    max_retries,
-                    retry_delay_ms,
-                    stats.clone(),
-                    failed_rows_log.clone(),
-                    range,
-                ).await?;
-            }
-            
-            #[cfg(not(feature = "optimized-inserts"))]
-            {
-                // ============================================================
-                // PRODUCTION PATH — original sequential insert with per-row retry
-                // UNTOUCHED — zero regression guarantee
-                // ============================================================
-                let mut batch_count: usize = 0;
-                for json_row in filtered_rows {
-                    let mut insert_success = false;
-                    let mut last_error: Option<String> = None;
-                    
-                    for attempt in 0..=max_retries {
-                        match target.get_session()
-                            .query_unpaged(insert_query.as_str(), (&json_row,))
-                            .await
-                        {
-                            Ok(_) => {
-                                stats.migrated_rows.fetch_add(1, Ordering::Relaxed);
-                                insert_success = true;
-                                break;
-                            }
-                            Err(e) => {
-                                last_error = Some(format!("{}", e));
-                                if attempt < max_retries {
-                                    tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
-                                }
-                            }
-                        }
-                    }
-                    
-                    if !insert_success {
-                        if batch_count % 1000 == 0 {
-                            warn!("Insert failed after {} retries (batch {}): {}",
-                                max_retries, batch_count, last_error.as_deref().unwrap_or("unknown"));
-                        }
-                        stats.failed_rows.fetch_add(1, Ordering::Relaxed);
-                        
-                        let record = FailedRowRecord {
-                            timestamp: Utc::now().to_rfc3339(),
-                            table: table.to_string(),
-                            token_range_start: range.start,
-                            token_range_end: range.end,
-                            error: last_error.unwrap_or_else(|| "unknown".to_string()),
-                            error_type: "row_insert_error".to_string(),
-                        };
-                        
-                        if let Ok(mut file_guard) = failed_rows_log.try_lock() {
-                            if let Some(ref mut file) = *file_guard {
-                                if let Ok(json) = serde_json::to_string(&record) {
-                                    let _ = writeln!(file, "{}", json);
-                                }
-                            }
-                        }
-                    }
-                    
-                    batch_count += 1;
-                    if batch_count % batch_size == 0 {
-                        tokio::task::yield_now().await;
-                    }
+
+                batch_count += 1;
+                if batch_count % batch_size == 0 {
+                    tokio::task::yield_now().await;
                 }
             }
         }
-        
+
         Ok(())
     }
     
