@@ -763,14 +763,19 @@ impl SSTableLoader {
             // Activated only when enable_pagination = true in config.
             // Prevents timeout crashes on large token ranges.
             // enable_pagination = false (default) never enters this branch.
+            //
+            // FIX: Insert each page's rows IMMEDIATELY after filtering.
+            // Previous code accumulated ALL pages into all_filtered Vec →
+            // unbounded memory growth → OOM on large token ranges.
+            // Now memory is bounded to page_size rows at any moment.
             // =================================================================
             let mut query_obj = Query::new(query_str.as_str());
             query_obj.set_page_size(page_size as i32);
 
             let mut paging_state = PagingState::start();
-            let mut all_filtered: Vec<String> = Vec::new();
             let mut total_row_count: u64 = 0;
             let mut page_num: u32 = 0;
+            let mut batch_count: usize = 0;
 
             loop {
                 let mut page_result = None;
@@ -819,6 +824,10 @@ impl SSTableLoader {
                 if let Some(result) = page_result {
                     let row_count = result.rows_num().unwrap_or(0);
                     total_row_count += row_count as u64;
+                    stats.total_rows.fetch_add(row_count as u64, Ordering::Relaxed);
+
+                    // Per-page filtered buffer — dropped at end of each page iteration
+                    let mut page_filtered: Vec<String> = Vec::with_capacity(row_count);
 
                     if let Some(rows) = result.rows {
                         for row in rows {
@@ -854,11 +863,72 @@ impl SSTableLoader {
                                 }
                             }
                             if !should_skip {
-                                all_filtered.push(json_row);
+                                page_filtered.push(json_row);
                             }
                         }
                     }
-                    debug!("Page {} fetched: {} rows (range {} → {})", page_num, row_count, range.start, range.end);
+
+                    debug!("Page {} fetched: {} rows, {} after filter (range {} → {})",
+                           page_num, row_count, page_filtered.len(), range.start, range.end);
+
+                    // ==========================================================
+                    // INSERT THIS PAGE'S ROWS IMMEDIATELY — memory stays bounded
+                    // Same insert logic as the production unpaged path below.
+                    // ==========================================================
+                    for json_row in page_filtered {
+                        let mut insert_success = false;
+                        let mut last_error: Option<String> = None;
+
+                        for attempt in 0..=max_retries {
+                            match target.get_session()
+                                .query_unpaged(insert_query.as_str(), (&json_row,))
+                                .await
+                            {
+                                Ok(_) => {
+                                    stats.migrated_rows.fetch_add(1, Ordering::Relaxed);
+                                    insert_success = true;
+                                    break;
+                                }
+                                Err(e) => {
+                                    last_error = Some(format!("{}", e));
+                                    if attempt < max_retries {
+                                        tokio::time::sleep(Duration::from_millis(retry_delay_ms)).await;
+                                    }
+                                }
+                            }
+                        }
+
+                        if !insert_success {
+                            if batch_count % 1000 == 0 {
+                                warn!("Insert failed after {} retries (page {} batch {}): {}",
+                                    max_retries, page_num, batch_count, last_error.as_deref().unwrap_or("unknown"));
+                            }
+                            stats.failed_rows.fetch_add(1, Ordering::Relaxed);
+
+                            let record = FailedRowRecord {
+                                timestamp: Utc::now().to_rfc3339(),
+                                table: table.to_string(),
+                                token_range_start: range.start,
+                                token_range_end: range.end,
+                                error: last_error.unwrap_or_else(|| "unknown".to_string()),
+                                error_type: "row_insert_error".to_string(),
+                            };
+
+                            if let Ok(mut file_guard) = failed_rows_log.try_lock() {
+                                if let Some(ref mut file) = *file_guard {
+                                    if let Ok(json) = serde_json::to_string(&record) {
+                                        let _ = writeln!(file, "{}", json);
+                                    }
+                                }
+                            }
+                        }
+
+                        batch_count += 1;
+                        if batch_count % batch_size == 0 {
+                            tokio::task::yield_now().await;
+                        }
+                    }
+                    // page_filtered dropped here — memory freed before next page fetch
                 }
 
                 page_num += 1;
@@ -868,12 +938,13 @@ impl SSTableLoader {
                 }
             }
 
-            stats.total_rows.fetch_add(total_row_count, Ordering::Relaxed);
             if total_row_count == 0 {
                 return Ok(());
             }
 
-            all_filtered
+            // Return empty Vec — all inserts already performed per-page above.
+            // The INSERT DISPATCH below will see is_empty() and return Ok(()).
+            Vec::new()
 
         } else {
             // =================================================================
